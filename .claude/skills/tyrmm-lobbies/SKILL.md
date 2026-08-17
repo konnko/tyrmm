@@ -22,16 +22,24 @@ reintroduce it.
   are pointless because hosts can't reconnect within the disconnect grace.
 - **Players are anonymous.** Identity = `player_id` in the session cookie
   (`ensure_player_id` plug in `router.ex`). Names are auto-assigned random
-  callsigns (adjective+animal+number) and stick to the cookie for the server's
-  lifetime (player entries are never deleted on disconnect, only `pid` is nilled).
+  callsigns (adjective+animal+number), held in the GenServer while the player
+  is around (the entry is deleted when the 30s disconnect grace runs out —
+  state stays bounded by concurrent players) and mirrored to localStorage
+  (`tyrmm:callsign`) by the `CallsignStore` hook, which replays the stored
+  name via `restore_name` on connect — so callsigns survive both drops and
+  server restarts.
 - **Host-only mutations**: description, free-to-join toggle, status
   (gathering/in game), auto-ready toggle, starting ready checks, closing the
   lobby. Always enforce in the server (not just
   the UI) via `hosted_lobby/2`.
-- **Seated-only access**: the lobby code, chat (read AND write — outsider
+- **Seated-only access**: both lobby codes, chat (read AND write — outsider
   snapshots get `messages: []`), and map votes are only for the host + members.
-- **One lobby per player in any role** (host or seat), unique codes among open
-  lobbies, 16 seats including the host.
+- **One lobby per player in any role** (host or seat), unique site codes among
+  open lobbies (guaranteed by generation), 16 seats including the host.
+- **Two codes, don't conflate them** (user-mandated): `code` is the generated
+  site lobby ID (6 chars, unambiguous alphabet, never user-set) used for
+  `join_lobby` and `/join/:code` links; `game_code` is the optional in-game
+  room code the host pastes (`set_game_code/2`, clearable, no uniqueness).
 
 ## Files
 
@@ -64,7 +72,8 @@ State:
 }
 ```
 
-Lobby map: `id` (random url-safe base64), `code` (uppercased, 4–12 alnum), `region` (:na | :eu),
+Lobby map: `id` (random url-safe base64), `code` (generated site ID),
+`game_code` (nil | uppercased 4–12 alnum), `region` (:na | :eu),
 `creator_id`, `members` (list, join order), `open?`, `status` (:gathering |
 :in_game, host-only via `set_status/2`, purely informational — joins stay
 allowed), `auto_ready?`,
@@ -116,7 +125,10 @@ Patterns the module relies on:
 - Page layout (top to bottom): site header (wordmark + "On site" via the layout's
   `:header` slot + live dot); always-on strip (callsign form + "Try ready check
   sound" + volume slider + "Keep tab awake" toggle w/ PC-only caption); seated →
-  one full lobby panel (ready-check banner, code + copy-join-link button, seats
+  one full lobby panel (ready-check banner, copy-join-link button (the site
+  lobby ID is deliberately NEVER displayed — it only rides the invite link,
+  showing it looks like an in-game code and misleads) + amber in-game code
+  (host edits / members see "Waiting on host"), seats
   bar, stateful player chips, chat below (stacked, never side-by-side), host
   controls, description, map vote w/ "leading:" in its heading); the Lobbies
   panel (its header corner holds the Lobbies/Seated stats + the join-by-code
@@ -132,9 +144,12 @@ Patterns the module relies on:
 - JS hooks (all in `app.js`): `ReadyAlarm` (mounts only while a running check has
   `!me_ready`; chirps on mount + every 4s, unmount stops it), `AlarmVolume`
   (range slider, localStorage `tyrmm:alarm-volume`, `phx-update="ignore"`),
-  `KeepAwakeToggle` (opt-in silent 40Hz loop, localStorage `tyrmm:keep-awake`,
-  keeps hidden tabs unthrottled — desktop only), `KeepAwake` (screen wake lock
-  while seated, visible tabs only), `ChatForm` (see below). Web-audio alarm is
+  `KeepAwakeToggle` (opt-in silent 40Hz loop, keeps hidden tabs unthrottled —
+  desktop only; deliberately NOT persisted — the enabling click is the
+  audio-unlock gesture, so it starts off every load and pulses amber until
+  clicked), `KeepAwake` (screen wake lock
+  while seated, visible tabs only), `ChatForm` (see below), `CallsignStore`
+  (localStorage `tyrmm:callsign`, restores the name on connect). Web-audio alarm is
   synthesized (no asset files); the sound-check button doubles as the audio
   unlock gesture.
 - Component conventions: private function components `panel` (header + corner
@@ -162,6 +177,10 @@ warning amber `#f0a63a`
 `font-display` (Chakra Petch, uppercase + wide tracking for headings/numbers) and
 `font-code` (IBM Plex Mono, labels/data) — defined in `@theme` in app.css. Square
 corners everywhere (no rounding), 1px borders, blinking cursor via `.animate-blink`.
+Control heights are unified (2026-08-17): `h-8` for every standard input/button
+(buttons use `inline-flex items-center`, no vertical padding), `h-10` for the
+big CTAs (Keep tab awake, I'm ready, Open lobby); the status toggle keeps its
+oversized `py-2.5`. Don't reintroduce ad-hoc `py-*` control heights.
 The user has asked for **compact** UI — small paddings (`p-4`, `py-2`); don't add
 airy spacing back. But not *tiny*: label type is 12–14px (bumped from 10–12px
 2026-08-17 after the user found it too small — don't shrink it again).

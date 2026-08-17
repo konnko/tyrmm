@@ -12,6 +12,9 @@ defmodule TyrmmWeb.LobbyLiveTest do
     {id, pid}
   end
 
+  # the generated site code of the lobby this player hosts (joins go through it)
+  defp site_code(host_id), do: Lobbies.snapshot(host_id).lobby.code
+
   defp cleanup(ids) do
     on_exit(fn ->
       Enum.each(ids, fn id ->
@@ -49,17 +52,29 @@ defmodule TyrmmWeb.LobbyLiveTest do
 
     html =
       view
-      |> form("form[phx-submit=create_lobby]", %{"code" => "abc123", "region" => "na"})
+      |> form("form[phx-submit=create_lobby]", %{"game_code" => "abc123", "region" => "na"})
       |> render_submit()
 
-    # host sees the room UI with the normalized code
+    # host sees the room UI with the normalized game code and an invite button,
+    # but the site lobby ID itself is never displayed (it only rides the link)
     assert html =~ "Your lobby"
     assert html =~ "ABC123"
+    assert html =~ "Copy join link"
 
-    # outsiders see the lobby but not the code
+    lobby_id_code =
+      :sys.get_state(Lobbies).lobbies
+      |> Map.values()
+      |> Enum.find(&(&1.game_code == "ABC123"))
+      |> Map.fetch!(:code)
+
+    assert html =~ "/join/#{lobby_id_code}"
+    refute html =~ ">#{lobby_id_code}<"
+
+    # outsiders see the lobby but neither code
     sim_player("outsider_h", "Outsider")
     lobby = Enum.find(Lobbies.snapshot("outsider_h").lobbies, &(&1.host == "Host"))
     assert lobby.code == nil
+    assert lobby.game_code == nil
     assert lobby.seats == 1
 
     # one hosted lobby per player
@@ -79,10 +94,14 @@ defmodule TyrmmWeb.LobbyLiveTest do
     {:ok, _} =
       Lobbies.create_lobby("l_host", "LOB01", :eu, open?: true, description: "come on in")
 
-    # by code (case-insensitive); wrong code rejected
+    code = site_code("l_host")
+
+    # by site code (case-insensitive); wrong code rejected
     assert {:error, "no lobby with that code"} = Lobbies.join_lobby("l_friend", "NOPE99")
-    assert :ok = Lobbies.join_lobby("l_friend", "lob01")
-    assert Lobbies.snapshot("l_friend").lobby.code == "LOB01"
+    assert :ok = Lobbies.join_lobby("l_friend", String.downcase(code))
+    assert Lobbies.snapshot("l_friend").lobby.code == code
+    # seated players also see the in-game code
+    assert Lobbies.snapshot("l_friend").lobby.game_code == "LOB01"
 
     # from the list, no code, because it's open
     lobby = Enum.find(Lobbies.snapshot("l_walkin").lobbies, &(&1.host == "l_host"))
@@ -90,9 +109,9 @@ defmodule TyrmmWeb.LobbyLiveTest do
     assert :ok = Lobbies.join_open_lobby("l_walkin", lobby.id)
 
     # one lobby per player, in any role
-    assert {:error, _} = Lobbies.join_lobby("l_friend", "LOB01")
+    assert {:error, _} = Lobbies.join_lobby("l_friend", code)
     assert {:error, _} = Lobbies.create_lobby("l_friend", "MINE01", :na)
-    assert {:error, _} = Lobbies.join_lobby("l_host", "LOB01")
+    assert {:error, _} = Lobbies.join_lobby("l_host", code)
 
     # closed lobbies need the code
     {:ok, _} = Lobbies.create_lobby("l_other", "SHUT01", :na)
@@ -112,8 +131,9 @@ defmodule TyrmmWeb.LobbyLiveTest do
     sim_player("lnk_host", "LinkHost")
     {:ok, _} = Lobbies.create_lobby("lnk_host", "LINK01", :na)
 
-    {:ok, view, _html} = live(conn, "/join/link01")
+    {:ok, view, _html} = live(conn, "/join/#{String.downcase(site_code("lnk_host"))}")
     assert render(view) =~ "you have a seat"
+    # seated members see the in-game code
     assert render(view) =~ "LINK01"
   end
 
@@ -128,7 +148,7 @@ defmodule TyrmmWeb.LobbyLiveTest do
     {_id, host_pid} = sim_player("gone_host", "GoneHost")
     {:ok, _} = Lobbies.create_lobby("gone_host", "GONE01", :na)
 
-    {:ok, view, _html} = live(conn, "/join/gone01")
+    {:ok, view, _html} = live(conn, "/join/#{site_code("gone_host")}")
     assert render(view) =~ "you have a seat"
 
     # kill the host's process, then skip the grace wait by firing the timer msg
@@ -163,6 +183,10 @@ defmodule TyrmmWeb.LobbyLiveTest do
     send(Process.whereis(Lobbies), {:drop_player, "tabby"})
     :sys.get_state(Lobbies)
     assert Lobbies.snapshot("tabby").lobby == nil
+
+    # the player entry goes with the grace timer — localStorage brings the
+    # callsign back on reconnect, so server state stays bounded
+    refute Map.has_key?(:sys.get_state(Lobbies).players, "tabby")
   end
 
   test "the host can kick a member, who is told about it", %{conn: conn} do
@@ -170,10 +194,10 @@ defmodule TyrmmWeb.LobbyLiveTest do
     sim_player("k_host", "KickHost")
     sim_player("k_other", "KOther")
     {:ok, _} = Lobbies.create_lobby("k_host", "KICK01", :na)
-    :ok = Lobbies.join_lobby("k_other", "KICK01")
+    :ok = Lobbies.join_lobby("k_other", site_code("k_host"))
 
     # the LiveView under test takes the third seat
-    {:ok, view, _html} = live(conn, "/join/kick01")
+    {:ok, view, _html} = live(conn, "/join/#{site_code("k_host")}")
     assert render(view) =~ "you have a seat"
 
     victim_id =
@@ -203,11 +227,12 @@ defmodule TyrmmWeb.LobbyLiveTest do
 
     [host | rest] = ids
     {:ok, _} = Lobbies.create_lobby(host, "CAP16", :na)
+    code = site_code(host)
     {fits, [last]} = Enum.split(rest, 15)
 
-    for id <- fits, do: :ok = Lobbies.join_lobby(id, "CAP16")
+    for id <- fits, do: :ok = Lobbies.join_lobby(id, code)
     assert Lobbies.snapshot(host).lobby.full
-    assert {:error, "lobby is full"} = Lobbies.join_lobby(last, "CAP16")
+    assert {:error, "lobby is full"} = Lobbies.join_lobby(last, code)
   end
 
   test "chat and map votes are for seated players only", %{conn: conn} do
@@ -217,7 +242,7 @@ defmodule TyrmmWeb.LobbyLiveTest do
     view |> form("form[phx-submit=set_name]", %{"name" => "ChatHost"}) |> render_submit()
 
     view
-    |> form("form[phx-submit=create_lobby]", %{"code" => "CHAT01", "region" => "na"})
+    |> form("form[phx-submit=create_lobby]", %{"game_code" => "CHAT01", "region" => "na"})
     |> render_submit()
 
     sim_player("c_outsider", "COutsider")
@@ -230,8 +255,9 @@ defmodule TyrmmWeb.LobbyLiveTest do
              Lobbies.vote_map("c_outsider", lobby.id, "Ravine")
 
     # outsiders don't even receive the messages in their snapshot
+    # (the host is the LiveView, so pull the site code straight from state)
     sim_player("c_seated", "CSeated")
-    :ok = Lobbies.join_lobby("c_seated", "CHAT01")
+    :ok = Lobbies.join_lobby("c_seated", :sys.get_state(Lobbies).lobbies[lobby.id].code)
     :ok = Lobbies.send_chat("c_seated", lobby.id, "glhf")
     assert [%{body: "glhf"}] = Lobbies.snapshot("c_seated").lobby.messages
 
@@ -264,7 +290,7 @@ defmodule TyrmmWeb.LobbyLiveTest do
     for id <- ids, do: sim_player(id, id)
 
     {:ok, _} = Lobbies.create_lobby("d_host", "DESC01", :na, description: "old text")
-    :ok = Lobbies.join_lobby("d_friend", "DESC01")
+    :ok = Lobbies.join_lobby("d_friend", site_code("d_host"))
 
     assert {:error, "you don't host a lobby"} = Lobbies.set_description("d_friend", "hijacked")
 
@@ -277,14 +303,47 @@ defmodule TyrmmWeb.LobbyLiveTest do
     assert Lobbies.snapshot("d_friend").lobby.description == nil
   end
 
+  test "site lobby ID and in-game code are separate; the game code comes later", %{conn: _conn} do
+    ids = ["c_host", "c_friend", "c_other"]
+    cleanup(ids)
+    for id <- ids, do: sim_player(id, id)
+
+    # no game code up front — the site ID is generated regardless
+    {:ok, _} = Lobbies.create_lobby("c_host", "", :na)
+    assert {:error, _} = Lobbies.create_lobby("c_other", "oops!", :na)
+
+    mine = Lobbies.snapshot("c_host").lobby
+    assert mine.code =~ ~r/^[A-Z2-9]{6}$/
+    assert mine.game_code == nil
+
+    # blank join input never matches; the site ID does
+    assert {:error, "no lobby with that code"} = Lobbies.join_lobby("c_friend", "")
+    assert :ok = Lobbies.join_lobby("c_friend", mine.code)
+
+    # only the host sets the game code, and only to something valid
+    assert {:error, "you don't host a lobby"} = Lobbies.set_game_code("c_friend", "LATER1")
+    assert {:error, _} = Lobbies.set_game_code("c_host", "no")
+
+    assert :ok = Lobbies.set_game_code("c_host", "later1")
+    assert Lobbies.snapshot("c_friend").lobby.game_code == "LATER1"
+
+    # changing the game code never touches the site ID or seated players
+    assert :ok = Lobbies.set_game_code("c_host", "LATER2")
+    assert Lobbies.snapshot("c_friend").lobby.code == mine.code
+
+    # and it can be cleared back to none (room closed, new one coming)
+    assert :ok = Lobbies.set_game_code("c_host", "  ")
+    assert Lobbies.snapshot("c_friend").lobby.game_code == nil
+  end
+
   test "ready check: host starts, everyone must confirm, timeout fails it", %{conn: _conn} do
     ids = ["r_host", "r_a", "r_b"]
     cleanup(ids)
     for id <- ids, do: sim_player(id, id)
 
     {:ok, _} = Lobbies.create_lobby("r_host", "READY1", :na)
-    :ok = Lobbies.join_lobby("r_a", "READY1")
-    :ok = Lobbies.join_lobby("r_b", "READY1")
+    :ok = Lobbies.join_lobby("r_a", site_code("r_host"))
+    :ok = Lobbies.join_lobby("r_b", site_code("r_host"))
 
     # only the host can start one; no readying without a check
     assert {:error, "you don't host a lobby"} = Lobbies.start_ready_check("r_a")
@@ -327,8 +386,8 @@ defmodule TyrmmWeb.LobbyLiveTest do
     for id <- ids, do: sim_player(id, id)
 
     {:ok, _} = Lobbies.create_lobby("rl_host", "READY2", :eu)
-    :ok = Lobbies.join_lobby("rl_a", "READY2")
-    :ok = Lobbies.join_lobby("rl_b", "READY2")
+    :ok = Lobbies.join_lobby("rl_a", site_code("rl_host"))
+    :ok = Lobbies.join_lobby("rl_b", site_code("rl_host"))
     :ok = Lobbies.start_ready_check("rl_host")
     :ok = Lobbies.ready_up("rl_host")
     :ok = Lobbies.ready_up("rl_a")
@@ -352,11 +411,12 @@ defmodule TyrmmWeb.LobbyLiveTest do
     :ok = Lobbies.set_auto_ready(host, true)
     assert {:error, "you don't host a lobby"} = Lobbies.set_auto_ready(hd(rest), true)
 
+    code = site_code(host)
     {first, [last]} = Enum.split(rest, 14)
-    for id <- first, do: :ok = Lobbies.join_lobby(id, "AUTO16")
+    for id <- first, do: :ok = Lobbies.join_lobby(id, code)
     assert Lobbies.snapshot(host).lobby.ready_check == nil
 
-    :ok = Lobbies.join_lobby(last, "AUTO16")
+    :ok = Lobbies.join_lobby(last, code)
     check = Lobbies.snapshot(host).lobby.ready_check
     assert check.status == :running
     # auto-started: nobody is ready yet, host included
@@ -369,7 +429,7 @@ defmodule TyrmmWeb.LobbyLiveTest do
     for id <- ids, do: sim_player(id, id)
 
     {:ok, _} = Lobbies.create_lobby("s_host", "STAT01", :na)
-    :ok = Lobbies.join_lobby("s_friend", "STAT01")
+    :ok = Lobbies.join_lobby("s_friend", site_code("s_host"))
     assert Lobbies.snapshot("s_friend").lobby.status == :gathering
 
     # members can't flip it, the host can — and everyone sees it in the list
@@ -390,7 +450,7 @@ defmodule TyrmmWeb.LobbyLiveTest do
     for id <- ids, do: sim_player(id, id)
 
     {:ok, _} = Lobbies.create_lobby("t_host", "TOGL01", :na)
-    :ok = Lobbies.join_lobby("t_friend", "TOGL01")
+    :ok = Lobbies.join_lobby("t_friend", site_code("t_host"))
     lobby = Lobbies.snapshot("t_host").lobby
     refute lobby.open
 

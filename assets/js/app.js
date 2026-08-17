@@ -92,24 +92,29 @@ window.addEventListener("tyrmm:copy", e => {
   setTimeout(() => (label.textContent = original), 1500)
 })
 
-let keepAwakeEnabled = localStorage.getItem("tyrmm:keep-awake") === "1"
+// deliberately NOT persisted: browsers refuse audio until the page gets a
+// user gesture, so a remembered "on" would silently do nothing after a fresh
+// load — instead the player clicks each visit and the click unlocks audio
+let keepAwakeEnabled = false
 
 const hooks = {
   // opt-in toggle for the silent keep-alive loop; the click doubles as the
-  // user gesture that unlocks audio for the tab
+  // user gesture that unlocks audio for the tab. Pulses amber until enabled.
   KeepAwakeToggle: {
     mounted() {
       this.render = () => {
-        this.el.classList.toggle("border-[#99f7ff]", keepAwakeEnabled)
-        this.el.classList.toggle("text-[#99f7ff]", keepAwakeEnabled)
+        for (const cls of ["animate-pulse", "border-[#f0a63a]", "text-[#f0a63a]", "bg-[#f0a63a]/10"])
+          this.el.classList.toggle(cls, !keepAwakeEnabled)
+        for (const cls of ["border-[#99f7ff]", "text-[#99f7ff]", "bg-[#99f7ff]/10"])
+          this.el.classList.toggle(cls, keepAwakeEnabled)
         this.el.querySelector("[data-state]").textContent = keepAwakeEnabled ? "on" : "off"
       }
       this.el.addEventListener("click", () => {
         keepAwakeEnabled = !keepAwakeEnabled
-        localStorage.setItem("tyrmm:keep-awake", keepAwakeEnabled ? "1" : "0")
         keepAwakeEnabled ? startSilence() : stopSilence()
         this.render()
       })
+      // still on after a LiveView reconnect (same page, gesture already given)
       if (keepAwakeEnabled) startSilence()
       this.render()
     },
@@ -133,6 +138,22 @@ const hooks = {
         alarmVolume = parseFloat(e.target.value) || 0
         localStorage.setItem("tyrmm:alarm-volume", e.target.value)
       })
+    },
+  },
+  // the callsign lives in the browser: restore it to the server on connect
+  // (names die with the in-memory server, localStorage outlives it)
+  CallsignStore: {
+    mounted() {
+      this.handleEvent("store_callsign", ({name}) =>
+        localStorage.setItem("tyrmm:callsign", name)
+      )
+      const current = this.el.querySelector("input[name=name]").value
+      const stored = localStorage.getItem("tyrmm:callsign")
+      if (stored && stored !== current) {
+        this.pushEvent("restore_name", {name: stored})
+      } else {
+        localStorage.setItem("tyrmm:callsign", current)
+      }
     },
   },
   // clears the chat input after a successful send, keeping focus for the next message

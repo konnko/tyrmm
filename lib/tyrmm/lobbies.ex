@@ -2,13 +2,16 @@ defmodule Tyrmm.Lobbies do
   @moduledoc """
   In-memory lobby directory for custom games.
 
-  A host creates a lobby by pasting the in-game room code and picking a
-  region (`:na` or `:eu`). Players take one of the 16 seats (host included)
-  either by typing the code or, for free-to-join lobbies, straight from the
-  lobby list. Seated players share the code, a chat, and a map vote.
+  A host picks a region (`:na` or `:eu`) and optionally pastes the in-game
+  room code (`game_code`, addable later with `set_game_code/2`). Every lobby
+  also gets a generated site code (`code`) that identifies it here: players
+  take one of the 16 seats (host included) by typing it or opening an invite
+  link — or, for free-to-join lobbies, straight from the lobby list. Seated
+  players share both codes, a chat, and a map vote.
 
-  Everything lives in this GenServer — no database. Player names stick to
-  the session cookie's `player_id` for the lifetime of the server.
+  Everything lives in this GenServer — no database. State is bounded by
+  concurrent players: entries are deleted when the disconnect grace runs out,
+  and the browser's localStorage restores the callsign on return.
   """
 
   use GenServer
@@ -61,12 +64,20 @@ defmodule Tyrmm.Lobbies do
   end
 
   @doc """
-  Opens a lobby. Options: `open?: true` makes it joinable straight from the
-  lobby list (no code needed), `auto_ready?: true` starts a ready check when
-  the lobby fills, `description:` is free text shown in the list.
+  Opens a lobby. The site code identifying it here is always generated;
+  `game_code` is the in-game room code and may be `nil` or blank when the
+  host hasn't made the room yet — added later with `set_game_code/2`.
+  Options: `open?: true` makes it joinable straight from the lobby list (no
+  code needed), `auto_ready?: true` starts a ready check when the lobby
+  fills, `description:` is free text shown in the list.
   """
-  def create_lobby(player_id, code, region, opts \\ []) do
-    GenServer.call(__MODULE__, {:create_lobby, player_id, code, region, opts})
+  def create_lobby(player_id, game_code, region, opts \\ []) do
+    GenServer.call(__MODULE__, {:create_lobby, player_id, game_code, region, opts})
+  end
+
+  @doc "Set (or change, or clear with empty text) the in-game room code of the lobby you host."
+  def set_game_code(player_id, game_code) do
+    GenServer.call(__MODULE__, {:set_game_code, player_id, game_code})
   end
 
   def close_lobby(player_id) do
@@ -103,7 +114,7 @@ defmodule Tyrmm.Lobbies do
     GenServer.call(__MODULE__, {:set_description, player_id, description})
   end
 
-  @doc "Take a seat in a lobby by pasting its in-game code."
+  @doc "Take a seat in a lobby by pasting its site code."
   def join_lobby(player_id, code) do
     GenServer.call(__MODULE__, {:join_lobby, player_id, code})
   end
@@ -174,7 +185,8 @@ defmodule Tyrmm.Lobbies do
         Map.put(player.pids, pid, Process.monitor(pid))
       end
 
-    # first visit gets a random callsign; returning cookies keep theirs
+    # first visit gets a random callsign; the browser then persists it in
+    # localStorage and replays it on reconnect (the CallsignStore hook)
     name = player.name || random_name(state)
     players = Map.put(state.players, player_id, %{name: name, pids: pids})
     # broadcast so a reconnecting player's seat chip stops showing as dropped
@@ -197,16 +209,16 @@ defmodule Tyrmm.Lobbies do
     end
   end
 
-  def handle_call({:create_lobby, player_id, code, region, opts}, _from, state) do
-    code = code |> to_string() |> String.trim() |> String.upcase()
+  def handle_call({:create_lobby, player_id, game_code, region, opts}, _from, state) do
+    game_code = normalize_code(game_code)
     description = opts |> Keyword.get(:description) |> normalize_description()
 
     cond do
       player_name(state, player_id) == nil ->
         {:reply, {:error, "pick a name first"}, state}
 
-      not Regex.match?(@code_format, code) ->
-        {:reply, {:error, "lobby code must be 4–12 letters or digits"}, state}
+      game_code == :invalid ->
+        {:reply, {:error, "game code must be 4–12 letters or digits"}, state}
 
       region not in @regions ->
         {:reply, {:error, "region must be NA or EU"}, state}
@@ -217,16 +229,14 @@ defmodule Tyrmm.Lobbies do
       seated_lobby(state, player_id) != nil ->
         {:reply, {:error, "leave your current lobby before hosting one"}, state}
 
-      find_by_code(state, code) != nil ->
-        {:reply, {:error, "a lobby with this code is already open"}, state}
-
       description == :too_long ->
         {:reply, {:error, "description must be at most 120 characters"}, state}
 
       true ->
         lobby = %{
           id: :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false),
-          code: code,
+          code: generate_code(state),
+          game_code: game_code,
           region: region,
           creator_id: player_id,
           members: [],
@@ -348,10 +358,28 @@ defmodule Tyrmm.Lobbies do
     end
   end
 
-  def handle_call({:join_lobby, player_id, code}, _from, state) do
-    code = code |> to_string() |> String.trim() |> String.upcase()
+  def handle_call({:set_game_code, player_id, game_code}, _from, state) do
+    lobby = hosted_lobby(state, player_id)
+    game_code = normalize_code(game_code)
 
-    case find_by_code(state, code) do
+    cond do
+      lobby == nil ->
+        {:reply, {:error, "you don't host a lobby"}, state}
+
+      game_code == :invalid ->
+        {:reply, {:error, "game code must be 4–12 letters or digits"}, state}
+
+      game_code == lobby.game_code ->
+        {:reply, :ok, state}
+
+      true ->
+        state = put_in(state.lobbies[lobby.id], %{lobby | game_code: game_code})
+        {:reply, :ok, broadcast(state)}
+    end
+  end
+
+  def handle_call({:join_lobby, player_id, code}, _from, state) do
+    case find_by_code(state, normalize_code(code)) do
       nil -> {:reply, {:error, "no lobby with that code"}, state}
       lobby -> take_seat(state, player_id, lobby)
     end
@@ -505,9 +533,13 @@ defmodule Tyrmm.Lobbies do
 
   def handle_info({:drop_player, player_id}, state) do
     if Map.has_key?(state.disconnected, player_id) do
-      # keep the players entry (name only) so the same cookie gets the
-      # same callsign when they come back
-      state = %{state | disconnected: Map.delete(state.disconnected, player_id)}
+      # the entry goes too — the browser's localStorage restores the callsign
+      # on return, so state stays bounded by concurrent players, not lifetime
+      state = %{
+        state
+        | disconnected: Map.delete(state.disconnected, player_id),
+          players: Map.delete(state.players, player_id)
+      }
 
       state =
         case hosted_lobby(state, player_id) do
@@ -660,8 +692,21 @@ defmodule Tyrmm.Lobbies do
     Enum.find(Map.values(state.lobbies), &(player_id in &1.members))
   end
 
+  # blank join input normalizes to nil and must never match a lobby
+  defp find_by_code(_state, nil), do: nil
+
   defp find_by_code(state, code) do
     Enum.find(Map.values(state.lobbies), &(&1.code == code))
+  end
+
+  # unambiguous alphabet: no I/L/O/0/1
+  @code_alphabet ~c"ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+  defp generate_code(state) do
+    Stream.repeatedly(fn ->
+      for _ <- 1..6, into: "", do: <<Enum.random(@code_alphabet)>>
+    end)
+    |> Enum.find(&(find_by_code(state, &1) == nil))
   end
 
   defp seats_taken(lobby), do: 1 + length(lobby.members)
@@ -671,6 +716,14 @@ defmodule Tyrmm.Lobbies do
   end
 
   defp player_name(state, player_id), do: get_in(state.players, [player_id, :name])
+
+  # nil when the host hasn't got a code yet, :invalid when they typed junk
+  defp normalize_code(code) do
+    case code |> to_string() |> String.trim() |> String.upcase() do
+      "" -> nil
+      code -> if Regex.match?(@code_format, code), do: code, else: :invalid
+    end
+  end
 
   defp normalize_description(nil), do: nil
 
@@ -722,8 +775,9 @@ defmodule Tyrmm.Lobbies do
       host: player_name(state, lobby.creator_id) || "host",
       mine: lobby.creator_id == player_id,
       member: player_id in lobby.members,
-      # only seated players get to see the code and read the chat
+      # only seated players get to see the codes and read the chat
       code: if(seated?, do: lobby.code),
+      game_code: if(seated?, do: lobby.game_code),
       open: lobby.open?,
       status: lobby.status,
       auto_ready: lobby.auto_ready?,

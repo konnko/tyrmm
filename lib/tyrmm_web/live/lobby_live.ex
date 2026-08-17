@@ -58,19 +58,30 @@ defmodule TyrmmWeb.LobbyLive do
   @impl true
   def handle_event("set_name", %{"name" => name}, socket) do
     case Lobbies.set_name(socket.assigns.player_id, name) do
-      :ok -> {:noreply, refresh(socket)}
+      :ok -> {:noreply, socket |> refresh() |> store_callsign()}
       {:error, msg} -> {:noreply, put_flash(socket, :error, msg)}
     end
   end
 
-  def handle_event("create_lobby", %{"code" => code, "region" => region} = params, socket) do
+  # the CallsignStore hook replays the browser's saved callsign on connect —
+  # a bad saved value is dropped silently by overwriting it with the server's
+  def handle_event("restore_name", %{"name" => name}, socket) do
+    Lobbies.set_name(socket.assigns.player_id, name)
+    {:noreply, socket |> refresh() |> store_callsign()}
+  end
+
+  def handle_event(
+        "create_lobby",
+        %{"game_code" => game_code, "region" => region} = params,
+        socket
+      ) do
     opts = [
       open?: params["open"] == "true",
       auto_ready?: params["auto_ready"] == "true",
       description: params["description"]
     ]
 
-    case Lobbies.create_lobby(socket.assigns.player_id, code, parse_region(region), opts) do
+    case Lobbies.create_lobby(socket.assigns.player_id, game_code, parse_region(region), opts) do
       {:ok, _lobby_id} -> {:noreply, refresh(socket)}
       {:error, msg} -> {:noreply, put_flash(socket, :error, msg)}
     end
@@ -111,6 +122,13 @@ defmodule TyrmmWeb.LobbyLive do
 
   def handle_event("toggle_open", params, socket) do
     case Lobbies.set_open(socket.assigns.player_id, params["value"] == "on") do
+      :ok -> {:noreply, refresh(socket)}
+      {:error, msg} -> {:noreply, put_flash(socket, :error, msg)}
+    end
+  end
+
+  def handle_event("set_game_code", %{"game_code" => game_code}, socket) do
+    case Lobbies.set_game_code(socket.assigns.player_id, game_code) do
       :ok -> {:noreply, refresh(socket)}
       {:error, msg} -> {:noreply, put_flash(socket, :error, msg)}
     end
@@ -201,6 +219,11 @@ defmodule TyrmmWeb.LobbyLive do
     else
       socket
     end
+  end
+
+  # mirror the server-side callsign into the browser's localStorage
+  defp store_callsign(socket) do
+    push_event(socket, "store_callsign", %{name: socket.assigns.snap.name})
   end
 
   defp ready_check_running?(snap) do
@@ -358,7 +381,7 @@ defmodule TyrmmWeb.LobbyLive do
           required
           autocomplete="off"
           placeholder="say something…"
-          class="flex-1 py-2 px-3 bg-transparent outline-none font-code text-[14px] text-[#d7dde6] placeholder-[#566175]"
+          class="flex-1 px-3 h-8 bg-transparent outline-none font-code text-[14px] text-[#d7dde6] placeholder-[#566175]"
         />
         <button
           type="submit"
@@ -385,6 +408,8 @@ defmodule TyrmmWeb.LobbyLive do
         <div class="flex flex-wrap gap-y-2 gap-x-6 items-center py-2 px-4 border border-[#1c212b] bg-[#10141b]">
           <form
             :if={@snap.name}
+            id="callsign-form"
+            phx-hook="CallsignStore"
             phx-submit="set_name"
             class="flex gap-2 items-center"
             title="callsign assigned at random — change it if you like"
@@ -400,11 +425,11 @@ defmodule TyrmmWeb.LobbyLive do
               maxlength="24"
               required
               autocomplete="off"
-              class="py-0.5 px-2 w-36 text-sm font-bold border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-display text-[#99f7ff] focus:border-[#99f7ff]"
+              class="px-2 w-36 h-8 text-sm font-bold border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-display text-[#99f7ff] focus:border-[#99f7ff]"
             />
             <button
               type="submit"
-              class="py-0.5 px-2.5 uppercase border transition border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
+              class="inline-flex items-center px-3 h-8 uppercase border transition border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
             >
               Rename
             </button>
@@ -413,7 +438,7 @@ defmodule TyrmmWeb.LobbyLive do
             <button
               phx-click={JS.dispatch("tyrmm:sound-check")}
               title="play the ready check alarm — also unlocks audio for this tab"
-              class="flex gap-1.5 items-center py-1 px-3 uppercase border transition cursor-pointer border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
+              class="flex gap-1.5 items-center px-3 h-8 uppercase border transition cursor-pointer border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
             >
               <.icon name="hero-speaker-wave-micro" class="size-3.5" /> Try ready check sound
             </button>
@@ -435,17 +460,14 @@ defmodule TyrmmWeb.LobbyLive do
               phx-hook="KeepAwakeToggle"
               phx-update="ignore"
               type="button"
-              class="flex gap-1.5 items-center py-1 px-3 uppercase border transition cursor-pointer border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
+              title="browsers only allow audio after a click, so this needs one every visit"
+              class="flex gap-2 items-center px-5 h-10 text-sm font-bold uppercase border transition cursor-pointer animate-pulse border-[#f0a63a] bg-[#f0a63a]/10 font-display tracking-[0.2em] text-[#f0a63a]"
             >
-              <.icon name="hero-bolt-micro" class="size-3.5" /> Keep tab awake:
+              <.icon name="hero-bolt-micro" class="size-4" /> Keep tab awake:
               <span data-state>off</span>
             </button>
             <span class="font-code text-[12px] text-[#7f8a9c]">
-              plays silent audio so the browser doesn't put this tab to sleep —
-              ready check alarms stay on time while you're in another window.
-              <span class="text-[#f0a63a]">PC only</span>
-              — mobile browsers suspend
-              background tabs regardless
+              Runs silent audio on loop. <span class="text-[#f0a63a]">PC only</span>, has to be enabled manually each page load
             </span>
           </div>
         </div>
@@ -463,7 +485,7 @@ defmodule TyrmmWeb.LobbyLive do
                 :if={@snap.lobby.mine}
                 phx-click="close_lobby"
                 data-confirm="Close the lobby? Everyone loses their seat."
-                class="py-0.5 px-3 uppercase border transition cursor-pointer border-[#f0554d]/50 font-code text-[12px] tracking-[0.2em] text-[#f0554d] hover:bg-[#f0554d] hover:text-[#0a0c10]"
+                class="inline-flex items-center px-3 h-8 uppercase border transition cursor-pointer border-[#f0554d]/50 font-code text-[12px] tracking-[0.2em] text-[#f0554d] hover:bg-[#f0554d] hover:text-[#0a0c10]"
               >
                 Close lobby
               </button>
@@ -523,7 +545,7 @@ defmodule TyrmmWeb.LobbyLive do
               <button
                 :if={@snap.lobby.ready_check.status == :running && !@snap.lobby.ready_check.me_ready}
                 phx-click="ready_up"
-                class="py-1.5 px-5 ml-auto text-sm font-bold uppercase border transition hover:bg-transparent border-[#99f7ff] bg-[#99f7ff] font-display tracking-[0.25em] text-[#0a0c10] hover:text-[#99f7ff]"
+                class="inline-flex items-center px-5 ml-auto h-10 text-sm font-bold uppercase border transition hover:bg-transparent border-[#99f7ff] bg-[#99f7ff] font-display tracking-[0.25em] text-[#0a0c10] hover:text-[#99f7ff]"
               >
                 I'm ready
               </button>
@@ -598,21 +620,58 @@ defmodule TyrmmWeb.LobbyLive do
           <div class="space-y-4">
             <div class="space-y-3">
               <div class="flex justify-between items-baseline">
-                <div>
-                  <div class="uppercase font-code text-[12px] tracking-[0.25em] text-[#7f8a9c]">
-                    In-game code
+                <div class="flex flex-wrap gap-y-2 gap-x-10">
+                  <div>
+                    <div class="uppercase font-code text-[12px] tracking-[0.25em] text-[#7f8a9c]">
+                      Invite
+                    </div>
+                    <%!-- the site lobby ID lives only inside this link — showing
+                          it would look like an in-game code and mislead --%>
+                    <button
+                      phx-click={JS.dispatch("tyrmm:copy")}
+                      data-copy={url(~p"/join/#{@snap.lobby.code}")}
+                      title="opening this link takes a seat in your lobby"
+                      class="flex gap-1.5 items-center px-3 mt-1 h-8 uppercase border transition cursor-pointer border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
+                    >
+                      <.icon name="hero-link-micro" class="size-3.5" /> Copy join link
+                    </button>
                   </div>
-                  <div class="text-xl font-bold select-all font-display tracking-[0.3em] text-[#99f7ff]">
-                    {@snap.lobby.code}
+                  <div>
+                    <div class="uppercase font-code text-[12px] tracking-[0.25em] text-[#7f8a9c]">
+                      In-game code
+                    </div>
+                    <%!-- the room may not exist yet — the host adds the code once it does --%>
+                    <form
+                      :if={@snap.lobby.mine}
+                      phx-submit="set_game_code"
+                      class="flex gap-2 items-center mt-0.5"
+                    >
+                      <input
+                        type="text"
+                        name="game_code"
+                        value={@snap.lobby.game_code}
+                        autocomplete="off"
+                        pattern="[a-zA-Z0-9]{4,12}"
+                        placeholder="ADD CODE"
+                        class="px-2 w-40 h-8 text-lg font-bold uppercase border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-display tracking-[0.3em] text-[#f0a63a] placeholder-[#566175] focus:border-[#f0a63a]"
+                      />
+                      <button
+                        type="submit"
+                        class="inline-flex items-center px-3 h-8 uppercase border transition cursor-pointer border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#f0a63a] hover:text-[#f0a63a]"
+                      >
+                        Save
+                      </button>
+                    </form>
+                    <div
+                      :if={!@snap.lobby.mine}
+                      class="text-xl font-bold select-all font-display tracking-[0.3em] text-[#f0a63a]"
+                    >
+                      <span :if={@snap.lobby.game_code}>{@snap.lobby.game_code}</span>
+                      <span :if={!@snap.lobby.game_code} class="text-base text-[#7f8a9c]">
+                        Waiting on host<span class="animate-blink">_</span>
+                      </span>
+                    </div>
                   </div>
-                  <button
-                    phx-click={JS.dispatch("tyrmm:copy")}
-                    data-copy={url(~p"/join/#{@snap.lobby.code}")}
-                    title="opening this link takes a seat in your lobby"
-                    class="flex gap-1.5 items-center py-0.5 px-2 mt-1 uppercase border transition cursor-pointer border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
-                  >
-                    <.icon name="hero-link-micro" class="size-3.5" /> Copy join link
-                  </button>
                 </div>
                 <div class="text-right">
                   <div class="uppercase font-code text-[12px] tracking-[0.25em] text-[#7f8a9c]">
@@ -656,7 +715,7 @@ defmodule TyrmmWeb.LobbyLive do
                   <button
                     :if={!match?(%{status: :running}, @snap.lobby.ready_check)}
                     phx-click="start_ready_check"
-                    class="py-1.5 px-4 uppercase border transition border-[#f0a63a]/60 font-code text-[13px] tracking-[0.2em] text-[#f0a63a] hover:bg-[#f0a63a] hover:text-[#0a0c10]"
+                    class="inline-flex items-center px-4 h-8 uppercase border transition border-[#f0a63a]/60 font-code text-[13px] tracking-[0.2em] text-[#f0a63a] hover:bg-[#f0a63a] hover:text-[#0a0c10]"
                   >
                     Ready check
                   </button>
@@ -664,7 +723,7 @@ defmodule TyrmmWeb.LobbyLive do
                 <button
                   :if={!@snap.lobby.mine}
                   phx-click="leave_lobby"
-                  class="py-1.5 px-4 uppercase border transition border-[#f0554d]/50 font-code text-[13px] tracking-[0.2em] text-[#f0554d] hover:bg-[#f0554d] hover:text-[#0a0c10]"
+                  class="inline-flex items-center px-4 h-8 uppercase border transition border-[#f0554d]/50 font-code text-[13px] tracking-[0.2em] text-[#f0554d] hover:bg-[#f0554d] hover:text-[#0a0c10]"
                 >
                   Give up seat
                 </button>
@@ -712,11 +771,11 @@ defmodule TyrmmWeb.LobbyLive do
               maxlength="120"
               autocomplete="off"
               placeholder="lobby description — shown in the lobby list (leave empty to clear)"
-              class="flex-1 py-1.5 px-3 min-w-0 border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-code text-[14px] text-[#d7dde6] placeholder-[#566175] focus:border-[#99f7ff]"
+              class="flex-1 px-3 min-w-0 h-8 border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-code text-[14px] text-[#d7dde6] placeholder-[#566175] focus:border-[#99f7ff]"
             />
             <button
               type="submit"
-              class="py-1.5 px-4 uppercase border transition border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
+              class="inline-flex items-center px-4 h-8 uppercase border transition border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
             >
               Update
             </button>
@@ -770,16 +829,15 @@ defmodule TyrmmWeb.LobbyLive do
                   <form phx-submit="create_lobby" class="space-y-3">
                     <label class="block">
                       <span class="block mb-1 uppercase font-code text-[13px] tracking-[0.25em] text-[#7f8a9c]">
-                        In-game room code
+                        Custom game code <span class="text-[#566175]">(you can add later)</span>
                       </span>
                       <input
                         type="text"
-                        name="code"
-                        required
+                        name="game_code"
                         autocomplete="off"
                         pattern="[a-zA-Z0-9]{4,12}"
-                        placeholder="PASTE CODE"
-                        class="py-1.5 px-3 w-full text-sm uppercase border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-code tracking-[0.3em] text-[#99f7ff] placeholder-[#566175] focus:border-[#99f7ff]"
+                        placeholder="PASTE CODE — OR ADD LATER"
+                        class="px-3 w-full h-8 text-sm uppercase border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-code tracking-[0.3em] text-[#99f7ff] placeholder-[#566175] focus:border-[#99f7ff]"
                       />
                     </label>
                     <div>
@@ -789,13 +847,13 @@ defmodule TyrmmWeb.LobbyLive do
                       <div class="flex gap-2">
                         <label class="flex-1 cursor-pointer">
                           <input type="radio" name="region" value="na" required class="sr-only peer" />
-                          <span class="block py-1.5 px-3 text-sm font-semibold text-center uppercase border transition border-[#2a3140] font-display tracking-[0.2em] text-[#aab4c4] peer-checked:border-[#f0a63a] peer-checked:bg-[#f0a63a]/10 peer-checked:text-[#f0a63a]">
+                          <span class="flex justify-center items-center px-3 h-8 text-sm font-semibold uppercase border transition border-[#2a3140] font-display tracking-[0.2em] text-[#aab4c4] peer-checked:border-[#f0a63a] peer-checked:bg-[#f0a63a]/10 peer-checked:text-[#f0a63a]">
                             NA
                           </span>
                         </label>
                         <label class="flex-1 cursor-pointer">
                           <input type="radio" name="region" value="eu" class="sr-only peer" />
-                          <span class="block py-1.5 px-3 text-sm font-semibold text-center uppercase border transition border-[#2a3140] font-display tracking-[0.2em] text-[#aab4c4] peer-checked:border-[#4ac6f5] peer-checked:bg-[#4ac6f5]/10 peer-checked:text-[#4ac6f5]">
+                          <span class="flex justify-center items-center px-3 h-8 text-sm font-semibold uppercase border transition border-[#2a3140] font-display tracking-[0.2em] text-[#aab4c4] peer-checked:border-[#4ac6f5] peer-checked:bg-[#4ac6f5]/10 peer-checked:text-[#4ac6f5]">
                             EU
                           </span>
                         </label>
@@ -811,7 +869,7 @@ defmodule TyrmmWeb.LobbyLive do
                         maxlength="120"
                         autocomplete="off"
                         placeholder="e.g. chill scrims, mics required"
-                        class="py-1.5 px-3 w-full border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-code text-[14px] text-[#d7dde6] placeholder-[#566175] focus:border-[#99f7ff]"
+                        class="px-3 w-full h-8 border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-code text-[14px] text-[#d7dde6] placeholder-[#566175] focus:border-[#99f7ff]"
                       />
                     </label>
                     <label class="flex gap-2.5 items-start cursor-pointer">
@@ -842,7 +900,7 @@ defmodule TyrmmWeb.LobbyLive do
                     </label>
                     <button
                       type="submit"
-                      class="py-2 px-6 w-full text-sm font-bold uppercase border transition border-[#99f7ff] font-display tracking-[0.2em] text-[#99f7ff] hover:bg-[#99f7ff] hover:text-[#0a0c10]"
+                      class="flex justify-center items-center px-6 w-full h-10 text-sm font-bold uppercase border transition border-[#99f7ff] font-display tracking-[0.2em] text-[#99f7ff] hover:bg-[#99f7ff] hover:text-[#0a0c10]"
                     >
                       Open lobby
                     </button>
@@ -863,7 +921,7 @@ defmodule TyrmmWeb.LobbyLive do
                 :if={@snap.name && is_nil(@snap.lobby)}
                 phx-submit="join_lobby"
                 class="flex gap-2 items-center"
-                title="take a seat with an in-game lobby code"
+                title="join with a lobby ID"
               >
                 <input
                   type="text"
@@ -871,14 +929,14 @@ defmodule TyrmmWeb.LobbyLive do
                   required
                   autocomplete="off"
                   pattern="[a-zA-Z0-9]{4,12}"
-                  placeholder="LOBBY CODE"
-                  class="py-1 px-3 w-40 text-sm uppercase border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-code tracking-[0.3em] text-[#99f7ff] placeholder-[#566175] focus:border-[#99f7ff]"
+                  placeholder="CODE"
+                  class="px-3 w-40 h-8 text-sm uppercase border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-code tracking-[0.3em] text-[#99f7ff] placeholder-[#566175] focus:border-[#99f7ff]"
                 />
                 <button
                   type="submit"
-                  class="py-1 px-4 text-sm font-bold uppercase border transition border-[#2a3140] font-display tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
+                  class="inline-flex items-center px-4 h-8 text-sm font-bold uppercase border transition border-[#2a3140] font-display tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
                 >
-                  Take a seat
+                  Join
                 </button>
               </form>
             </div>
@@ -938,7 +996,7 @@ defmodule TyrmmWeb.LobbyLive do
                     }
                     phx-click="join_open"
                     phx-value-lobby-id={lobby.id}
-                    class="py-1 px-3 uppercase border transition border-[#99f7ff]/50 text-[13px] tracking-[0.15em] text-[#99f7ff] hover:bg-[#99f7ff] hover:text-[#0a0c10]"
+                    class="inline-flex items-center px-3 h-8 uppercase border transition border-[#99f7ff]/50 text-[13px] tracking-[0.15em] text-[#99f7ff] hover:bg-[#99f7ff] hover:text-[#0a0c10]"
                   >
                     Join
                   </button>
