@@ -38,11 +38,13 @@ reintroduce it.
 | File | Role |
 |---|---|
 | `lib/tyrmm/lobbies.ex` | The GenServer: all state, rules, and snapshot building |
-| `lib/tyrmm_web/live/lobby_live.ex` | The single LiveView at `/` (whole UI) |
+| `lib/tyrmm_web/live/lobby_live.ex` | The single LiveView (routes `/` and `/join/:code`) |
 | `lib/tyrmm_web/presence.ex` | Phoenix.Presence for the "on site" count |
-| `lib/tyrmm_web/components/layouts.ex` | App shell (dark theme baked in) |
+| `lib/tyrmm_web/components/layouts.ex` | App shell (dark theme baked in, `:header` slot for the top bar) |
+| `assets/js/app.js` | All client hooks: alarm audio, wake lock, chat focus, clipboard |
 | `assets/css/app.css` | Fonts, `@theme` utilities, grid/scan/blink keyframes |
 | `test/tyrmm_web/live/lobby_live_test.exs` | The whole test suite |
+| `Dockerfile`, `rel/overlays/bin/server` | Release scaffolding (phx.gen.release --docker) |
 
 Both `TyrmmWeb.Presence` and `Tyrmm.Lobbies` are supervision children in
 `application.ex` — changing that file requires an app-server restart
@@ -57,7 +59,7 @@ State:
 ```elixir
 %{
   players: %{player_id => %{name, pid, ref}},   # ref = monitor; pid/ref nil while disconnected
-  disconnected: %{player_id => grace_timer},     # 10s grace; refresh survives, then cleanup
+  disconnected: %{player_id => grace_timer},     # 30s grace; refresh survives, then cleanup
   lobbies: %{lobby_id => lobby}
 }
 ```
@@ -88,8 +90,16 @@ Patterns the module relies on:
   none), lobbies (all, each with mine/member flags), counts}`. Per-viewer secrets
   (code, messages) are stripped in `lobby_view/3` — add new secret fields there.
 - Liveness: LiveViews call `register(player_id)` on connected mount; the server
-  monitors the pid. DOWN → 10s grace timer → `drop_player`: member loses seat
+  monitors the pid. DOWN → 30s grace timer → `drop_player`: member loses seat
   (votes + ready responses go too, via `remove_seat`), host's lobby closes.
+  DOWN and register both `broadcast` (seat chips show dropped players red live).
+- When a lobby closes (host closed it or dropped), `notify_lobby_closed/3` sends
+  `{:lobby_closed, reason}` directly to each connected member's LiveView pid →
+  they render it as an error flash. Use this direct-send pattern for any future
+  "tell these specific players something" need.
+- The `players` list in `lobby_view` is per-player maps `%{name, you, connected,
+  ready}` (ready is nil outside a running check) — that drives seat chip colors:
+  red = disconnected, amber = owes a ready, lime `#c8f542` = readied, cyan = you.
 - Timer messages carry the lobby id and re-check state on arrival (lobby may be
   gone, check may have been replaced) — follow this pattern for any new timer.
 
@@ -100,12 +110,30 @@ Patterns the module relies on:
 - Countdown ticking: `:tick` self-messages every 1s only while a ready check is
   `:running` (`ticking` assign prevents duplicate timers); `seconds_left/2` from a
   ms-epoch `deadline` + `now` assign.
-- UI states: seated → one full "Your lobby / X's lobby" panel (code, seats bar,
-  player chips, ready-check banner, chat, host toggles, description, map vote)
-  and the host/join panels are hidden; not seated → single-row "Join a lobby"
-  bar + collapsible "Host a lobby" section (client-side `JS.toggle` on
-  `#host-lobby-body`, chevron span `#host-lobby-chevron` rotates via
-  `JS.toggle_class`) + lobbies table.
+- Page layout (top to bottom): site header (wordmark + "On site" via the layout's
+  `:header` slot + live dot); always-on strip (callsign form + "Try ready check
+  sound" + volume slider + "Keep tab awake" toggle w/ PC-only caption); seated →
+  one full lobby panel (ready-check banner, code + copy-join-link button, seats
+  bar, stateful player chips, chat below (stacked, never side-by-side), host
+  controls, description, map vote w/ "leading:" in its heading); the Lobbies
+  panel (its header corner holds the Lobbies/Seated stats + the join-by-code
+  form when unseated); unseated also get the collapsible "Host a lobby" section
+  (grid-rows 0fr↔1fr height animation via `JS.toggle_class("grid-rows-[1fr]
+  visible")` — animates height so content below glides instead of jumping;
+  free-to-join + auto-ready checkboxes default CHECKED).
+- Invite links: `/join/:code` → `handle_params` joins on connected mount, flashes
+  the outcome, `push_patch`es back to `/` (note: a patch during initial mount
+  emits no patch event — don't `assert_patch` it in tests). Own-lobby links are
+  silently ignored. The copy button uses `data-copy` + a `tyrmm:copy` window
+  listener (JS.dispatch), with a "Copied!" label swap.
+- JS hooks (all in `app.js`): `ReadyAlarm` (mounts only while a running check has
+  `!me_ready`; chirps on mount + every 4s, unmount stops it), `AlarmVolume`
+  (range slider, localStorage `tyrmm:alarm-volume`, `phx-update="ignore"`),
+  `KeepAwakeToggle` (opt-in silent 40Hz loop, localStorage `tyrmm:keep-awake`,
+  keeps hidden tabs unthrottled — desktop only), `KeepAwake` (screen wake lock
+  while seated, visible tabs only), `ChatForm` (see below). Web-audio alarm is
+  synthesized (no asset files); the sound-check button doubles as the audio
+  unlock gesture.
 - Component conventions: private function components `panel` (header + corner
   slot), `stat`, `region_badge`, `chat_box`, `map_vote`. `<.icon>` takes only
   `name`/`class` — wrap in a span if you need an id.
@@ -136,9 +164,10 @@ airy spacing back. But not *tiny*: label type is 12–14px (bumped from 10–12p
 
 ## Maps list
 
-10 hardcoded maps in `@maps` (from the user's game screenshot): Divide,
-Prototype: Dunes, Prototype: Expanse, Fields, Prototype: Ikarus Only, Ravine,
-Prototype: Ruins, Sandbox, Scorch, Wind Valley. Vote = toggle (same map unvotes),
+10 hardcoded maps in `@maps` (from the user's game screenshot), ordered
+regular → prototypes → Sandbox last (user-chosen order): Divide, Fields, Ravine,
+Scorch, Wind Valley, Prototype: Dunes, Prototype: Expanse, Prototype: Ikarus Only,
+Prototype: Ruins, Sandbox. Vote = toggle (same map unvotes),
 one vote per player, tally + `top_map` computed in `vote_view/2`.
 
 ## Testing & verification
@@ -147,12 +176,25 @@ one vote per player, tally + `top_map` computed in `vote_view/2`.
   GenServer!). Helpers: `sim_player(id, name)` spawns a sleeping pid and registers
   it; `cleanup(ids)` on_exit leaves/closes for every id. **Pitfalls learned the
   hard way**: don't pattern-match `[lobby] = snapshot(...).lobbies` (leftover
-  lobbies from other tests — LiveView-hosted lobbies linger 10s after the test's
+  lobbies from other tests — LiveView-hosted lobbies linger 30s after the test's
   LiveView dies); use `Enum.find` by host/id instead. To test timeouts, send the
   timer message directly: `send(Process.whereis(Tyrmm.Lobbies), {:ready_check_timeout, id})`.
+- To test "player dropped" paths: kill the sim pid, sync with
+  `:sys.get_state(Lobbies)`, then send `{:drop_player, id}` directly (skips the
+  30s grace), and sync again before asserting.
 - Always finish with `mix precommit` (compile --warnings-as-errors + format + test).
 - Live verification: drive the user's browser with `browser_eval` (page text
   renders UPPERCASE via CSS — compare case-insensitively) and simulate other
   players from `project_eval` with spawned sleeping pids, e.g.
   `Lobbies.register("sim", pid); Lobbies.join_lobby("sim", "CODE")`. Clean up sims
   (leave/close) when done. Don't close/modify a lobby the user opened themselves.
+
+## Release
+
+DB-free `mix release`: `MIX_ENV=prod mix assets.deploy && MIX_ENV=prod mix release`,
+run `rel`'s `bin/server` (or the generated `Dockerfile`). Required env:
+`SECRET_KEY_BASE`, `PHX_HOST`; optional `PORT`. No migrations, no services.
+`assets.deploy` must run `compile` first (colocated-hooks CSS is generated at
+compile time — already in the alias, don't remove it). `force_ssl` is on in
+`prod.exs` (expects a TLS proxy setting x-forwarded-proto). Changing config
+files or deps requires a full dev-server restart, not just a code reload.

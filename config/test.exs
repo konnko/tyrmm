@@ -7,12 +7,6 @@ config :tyrmm, TyrmmWeb.Endpoint,
   secret_key_base: "Am8EmX9kK9lkYD3PMUw5+WJCwMQ4MNv8/YWqTW+V551KDp1UmOcupH1NDT9XcU8q",
   server: false
 
-# In test we don't send emails
-config :tyrmm, Tyrmm.Mailer, adapter: Swoosh.Adapters.Test
-
-# Disable swoosh api client as it is only required for production adapters
-config :swoosh, :api_client, false
-
 # Print only warnings and errors during test
 config :logger, level: :warning
 

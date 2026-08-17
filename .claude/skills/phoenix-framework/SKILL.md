@@ -10,7 +10,6 @@ metadata:
 
 ### phoenix
 
-- [ecto](references/phoenix/ecto.md)
 - [elixir](references/phoenix/elixir.md)
 - [html](references/phoenix/html.md)
 - [liveview](references/phoenix/liveview.md)
@@ -19,7 +18,7 @@ metadata:
 ## Searching Documentation
 
 ```sh
-mix usage_rules.search_docs "search term" -p phoenix -p phoenix_ecto -p phoenix_html -p phoenix_live_dashboard -p phoenix_live_reload -p phoenix_live_view
+mix usage_rules.search_docs "search term" -p phoenix -p phoenix_html -p phoenix_live_dashboard -p phoenix_live_reload -p phoenix_live_view
 ```
 
 ## Available Mix Tasks

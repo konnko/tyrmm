@@ -14,7 +14,7 @@ defmodule Tyrmm.Lobbies do
   use GenServer
 
   @lobby_size 16
-  @disconnect_grace_ms 10_000
+  @disconnect_grace_ms 30_000
   @chat_history 50
   @ready_check_timeout_ms 30_000
   @ready_result_ttl_ms 15_000
@@ -25,15 +25,15 @@ defmodule Tyrmm.Lobbies do
 
   @maps [
     "Divide",
+    "Fields",
+    "Ravine",
+    "Scorch",
+    "Wind Valley",
     "Prototype: Dunes",
     "Prototype: Expanse",
-    "Fields",
     "Prototype: Ikarus Only",
-    "Ravine",
     "Prototype: Ruins",
-    "Sandbox",
-    "Scorch",
-    "Wind Valley"
+    "Sandbox"
   ]
 
   @name_adjectives ~w(Iron Swift Crimson Silent Vivid Rogue Solar Frost Neon Ember
@@ -237,8 +237,12 @@ defmodule Tyrmm.Lobbies do
 
   def handle_call({:close_lobby, player_id}, _from, state) do
     case hosted_lobby(state, player_id) do
-      nil -> {:reply, :ok, state}
-      lobby -> {:reply, :ok, state |> remove_lobby(lobby.id) |> broadcast()}
+      nil ->
+        {:reply, :ok, state}
+
+      lobby ->
+        notify_lobby_closed(state, lobby, "the host closed the lobby")
+        {:reply, :ok, state |> remove_lobby(lobby.id) |> broadcast()}
     end
   end
 
@@ -478,8 +482,12 @@ defmodule Tyrmm.Lobbies do
 
       state =
         case hosted_lobby(state, player_id) do
-          nil -> remove_seat(state, player_id)
-          lobby -> remove_lobby(state, lobby.id)
+          nil ->
+            remove_seat(state, player_id)
+
+          lobby ->
+            notify_lobby_closed(state, lobby, "the host disconnected — lobby closed")
+            remove_lobby(state, lobby.id)
         end
 
       {:noreply, broadcast(state)}
@@ -597,6 +605,17 @@ defmodule Tyrmm.Lobbies do
 
   defp remove_lobby(state, lobby_id) do
     %{state | lobbies: Map.delete(state.lobbies, lobby_id)}
+  end
+
+  # tell every connected member why their lobby just vanished
+  defp notify_lobby_closed(state, lobby, reason) do
+    for id <- lobby.members,
+        pid = get_in(state.players, [id, :pid]),
+        is_pid(pid) do
+      send(pid, {:lobby_closed, reason})
+    end
+
+    :ok
   end
 
   ## Helpers

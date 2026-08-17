@@ -18,7 +18,7 @@ defmodule TyrmmWeb.Router do
     live "/join/:code", LobbyLive
   end
 
-  # Enable LiveDashboard and Swoosh mailbox preview in development
+  # Enable LiveDashboard in development
   if Application.compile_env(:tyrmm, :dev_routes) do
     # If you want to use the LiveDashboard in production, you should put
     # it behind authentication and allow only admins to access it.
@@ -28,7 +28,6 @@ defmodule TyrmmWeb.Router do
       pipe_through :browser
 
       live_dashboard "/dashboard", metrics: TyrmmWeb.Telemetry
-      forward "/mailbox", Plug.Swoosh.MailboxPreview
     end
   end
 

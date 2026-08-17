@@ -91,8 +91,6 @@ defmodule Tyrmm.MixProject do
        app: false,
        compile: false,
        depth: 1},
-      {:swoosh, "~> 1.16"},
-      {:req, "~> 0.5"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 1.0"},
@@ -114,6 +112,7 @@ defmodule Tyrmm.MixProject do
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind tyrmm", "esbuild tyrmm"],
       "assets.deploy": [
+        "compile",
         "tailwind tyrmm --minify",
         "esbuild tyrmm --minify",
         "phx.digest"

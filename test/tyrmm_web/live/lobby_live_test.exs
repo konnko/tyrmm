@@ -123,6 +123,25 @@ defmodule TyrmmWeb.LobbyLiveTest do
     refute render(view) =~ "you have a seat"
   end
 
+  test "members are told why the lobby vanished when the host drops", %{conn: conn} do
+    cleanup(["gone_host"])
+    {_id, host_pid} = sim_player("gone_host", "GoneHost")
+    {:ok, _} = Lobbies.create_lobby("gone_host", "GONE01", :na)
+
+    {:ok, view, _html} = live(conn, "/join/gone01")
+    assert render(view) =~ "you have a seat"
+
+    # kill the host's process, then skip the grace wait by firing the timer msg
+    Process.exit(host_pid, :kill)
+    :sys.get_state(Lobbies)
+    send(Process.whereis(Lobbies), {:drop_player, "gone_host"})
+    :sys.get_state(Lobbies)
+
+    html = render(view)
+    assert html =~ "the host disconnected — lobby closed"
+    refute html =~ "you have a seat"
+  end
+
   test "a lobby caps at 16 seats", %{conn: _conn} do
     ids = for i <- 1..17, do: "cap_#{i}"
     cleanup(ids)

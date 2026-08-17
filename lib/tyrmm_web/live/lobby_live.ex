@@ -167,6 +167,10 @@ defmodule TyrmmWeb.LobbyLive do
     {:noreply, assign(socket, :online, Presence.online_count())}
   end
 
+  def handle_info({:lobby_closed, reason}, socket) do
+    {:noreply, socket |> put_flash(:error, reason) |> refresh()}
+  end
+
   def handle_info(:tick, socket) do
     socket = assign(socket, :now, System.system_time(:millisecond))
 
@@ -431,7 +435,10 @@ defmodule TyrmmWeb.LobbyLive do
             </button>
             <span class="font-code text-[12px] text-[#7f8a9c]">
               plays silent audio so the browser doesn't put this tab to sleep —
-              ready check alarms stay on time while you're in another window
+              ready check alarms stay on time while you're in another window.
+              <span class="text-[#f0a63a]">PC only</span>
+              — mobile browsers suspend
+              background tabs regardless
             </span>
           </div>
         </div>
