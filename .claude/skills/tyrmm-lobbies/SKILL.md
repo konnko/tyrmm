@@ -1,0 +1,158 @@
+---
+name: tyrmm-lobbies
+description: Use when working on Tyrmm's lobby system (lobbies, seats, chat, map votes, ready checks, the LobbyLive UI, or the Lobbies GenServer). Explains the architecture, hard rules, code patterns, and testing/verification conventions of the current implementation.
+---
+
+# Tyrmm lobby system
+
+Tyrmm is a lobby directory for a game's custom-games mode. Hosts paste an in-game
+room code, players take seats, coordinate via chat / map votes / ready checks, then
+join the custom game in-game with the code. **There is no matchmaking** — a queue +
+confirmation system existed and was deliberately scrapped by the user; do not
+reintroduce it.
+
+## Hard rules (user-mandated, do not violate)
+
+- **No database at all.** Everything lives in the `Tyrmm.Lobbies` GenServer. The
+  user said: "don't use db for anything, just genservers, don't worry about
+  memory", and later (2026-08-17) had the entire Ash/Postgres/auth/Oban/
+  ErrorTracker skeleton deleted because the deploy target has no Postgres —
+  do not add Ecto/repos back. Errors go to server logs only. A shutdown
+  backup of lobby state was built and deliberately reverted: restored lobbies
+  are pointless because hosts can't reconnect within the disconnect grace.
+- **Players are anonymous.** Identity = `player_id` in the session cookie
+  (`ensure_player_id` plug in `router.ex`). Names are auto-assigned random
+  callsigns (adjective+animal+number) and stick to the cookie for the server's
+  lifetime (player entries are never deleted on disconnect, only `pid` is nilled).
+- **Host-only mutations**: description, free-to-join toggle, status
+  (gathering/in game), auto-ready toggle, starting ready checks, closing the
+  lobby. Always enforce in the server (not just
+  the UI) via `hosted_lobby/2`.
+- **Seated-only access**: the lobby code, chat (read AND write — outsider
+  snapshots get `messages: []`), and map votes are only for the host + members.
+- **One lobby per player in any role** (host or seat), unique codes among open
+  lobbies, 16 seats including the host.
+
+## Files
+
+| File | Role |
+|---|---|
+| `lib/tyrmm/lobbies.ex` | The GenServer: all state, rules, and snapshot building |
+| `lib/tyrmm_web/live/lobby_live.ex` | The single LiveView at `/` (whole UI) |
+| `lib/tyrmm_web/presence.ex` | Phoenix.Presence for the "on site" count |
+| `lib/tyrmm_web/components/layouts.ex` | App shell (dark theme baked in) |
+| `assets/css/app.css` | Fonts, `@theme` utilities, grid/scan/blink keyframes |
+| `test/tyrmm_web/live/lobby_live_test.exs` | The whole test suite |
+
+Both `TyrmmWeb.Presence` and `Tyrmm.Lobbies` are supervision children in
+`application.ex` — changing that file requires an app-server restart
+(`restart_app_server` with `supervision_tree_changed`); everything else hot-reloads.
+Note: hot-reloading `lobbies.ex` twice can kill the GenServer (old code purge) and
+reset dev state — that's normal in dev, not a bug.
+
+## Server architecture (`Tyrmm.Lobbies`)
+
+State:
+
+```elixir
+%{
+  players: %{player_id => %{name, pid, ref}},   # ref = monitor; pid/ref nil while disconnected
+  disconnected: %{player_id => grace_timer},     # 10s grace; refresh survives, then cleanup
+  lobbies: %{lobby_id => lobby}
+}
+```
+
+Lobby map: `id` (random url-safe base64), `code` (uppercased, 4–12 alnum), `region` (:na | :eu),
+`creator_id`, `members` (list, join order), `open?`, `status` (:gathering |
+:in_game, host-only via `set_status/2`, purely informational — joins stay
+allowed), `auto_ready?`,
+`ready_check` (nil or map below), `description` (nil | ≤120 chars), `votes`
+(`%{player_id => map_name}`), `messages` (newest-first, capped 50, ≤240 chars each),
+`created_at` (ms).
+
+Ready check: `%{status: :running | :passed | :failed, responses: %{player_id => true},
+deadline (ms epoch), timer_ref}`. Nobody is pre-readied — the host must confirm
+like everyone else (manual or auto start). Passes when **all currently
+seated** are ready (recheck on ready_up AND on seat removal — a leaver can complete
+it; a mid-check joiner must also ready). Timeout 30s → :failed. Results display for
+15s then `{:clear_ready_check, id}` clears — guarded to never clear a `:running`
+check. Nobody is kicked on failure.
+
+Patterns the module relies on:
+
+- Every mutation goes through `handle_call`, returns updated state through
+  `broadcast/1` which pushes `:lobbies_updated` on PubSub topic `"lobbies"`.
+  LiveViews then re-pull their own personalized snapshot — there is no diffing,
+  no per-event payloads. Keep this model; it makes new features one broadcast away.
+- `snapshot(player_id)` returns a personalized view: `%{name, lobby (mine, nil if
+  none), lobbies (all, each with mine/member flags), counts}`. Per-viewer secrets
+  (code, messages) are stripped in `lobby_view/3` — add new secret fields there.
+- Liveness: LiveViews call `register(player_id)` on connected mount; the server
+  monitors the pid. DOWN → 10s grace timer → `drop_player`: member loses seat
+  (votes + ready responses go too, via `remove_seat`), host's lobby closes.
+- Timer messages carry the lobby id and re-check state on arrival (lobby may be
+  gone, check may have been replaced) — follow this pattern for any new timer.
+
+## LiveView architecture (`TyrmmWeb.LobbyLive`)
+
+- `refresh/1` re-pulls the snapshot; every event handler ends with it. Server
+  errors come back as `{:error, msg}` → `put_flash(:error, msg)`.
+- Countdown ticking: `:tick` self-messages every 1s only while a ready check is
+  `:running` (`ticking` assign prevents duplicate timers); `seconds_left/2` from a
+  ms-epoch `deadline` + `now` assign.
+- UI states: seated → one full "Your lobby / X's lobby" panel (code, seats bar,
+  player chips, ready-check banner, chat, host toggles, description, map vote)
+  and the host/join panels are hidden; not seated → single-row "Join a lobby"
+  bar + collapsible "Host a lobby" section (client-side `JS.toggle` on
+  `#host-lobby-body`, chevron span `#host-lobby-chevron` rotates via
+  `JS.toggle_class`) + lobbies table.
+- Component conventions: private function components `panel` (header + corner
+  slot), `stat`, `region_badge`, `chat_box`, `map_vote`. `<.icon>` takes only
+  `name`/`class` — wrap in a span if you need an id.
+- Chat input: stable form id + `ChatForm` hook — on successful send the server
+  pushes a `chat_sent` event and the hook clears + refocuses the input (an id-bump
+  trick was tried first; it cleared but dropped focus).
+- Chat scroll pinning: messages stored/rendered newest-first inside a
+  `flex-col-reverse` scroll container — newest visually at the bottom, no JS.
+- Checkbox toggles (`toggle_open`, `toggle_auto_ready`): `phx-click` on the
+  checkbox; checked click sends `%{"value" => "on"}`, unchecked sends no value —
+  handlers test `params["value"] == "on"`.
+
+## Design language
+
+Dark "operations deck": bg `#0a0c10`, panel `#10141b`, border `#1c212b`, muted
+text `#aab4c4`/`#7f8a9c`/`#566175` (brightened 2026-08-17 — user found the old
+greys too faint; don't dim them back), accent ice-cyan `#99f7ff` (user swapped it
+in for the original lime `#c8f542` on 2026-08-17; lime survives ONLY on the header
+"live" pulse dot and the Start game button — the user chose those exceptions),
+warning amber `#f0a63a`
+(also the NA region color), danger red `#f0554d`, EU cyan `#4ac6f5`. Fonts:
+`font-display` (Chakra Petch, uppercase + wide tracking for headings/numbers) and
+`font-code` (IBM Plex Mono, labels/data) — defined in `@theme` in app.css. Square
+corners everywhere (no rounding), 1px borders, blinking cursor via `.animate-blink`.
+The user has asked for **compact** UI — small paddings (`p-4`, `py-2`); don't add
+airy spacing back. But not *tiny*: label type is 12–14px (bumped from 10–12px
+2026-08-17 after the user found it too small — don't shrink it again).
+
+## Maps list
+
+10 hardcoded maps in `@maps` (from the user's game screenshot): Divide,
+Prototype: Dunes, Prototype: Expanse, Fields, Prototype: Ikarus Only, Ravine,
+Prototype: Ruins, Sandbox, Scorch, Wind Valley. Vote = toggle (same map unvotes),
+one vote per player, tally + `top_map` computed in `vote_view/2`.
+
+## Testing & verification
+
+- Tests: `test/tyrmm_web/live/lobby_live_test.exs`, `async: false` (shared
+  GenServer!). Helpers: `sim_player(id, name)` spawns a sleeping pid and registers
+  it; `cleanup(ids)` on_exit leaves/closes for every id. **Pitfalls learned the
+  hard way**: don't pattern-match `[lobby] = snapshot(...).lobbies` (leftover
+  lobbies from other tests — LiveView-hosted lobbies linger 10s after the test's
+  LiveView dies); use `Enum.find` by host/id instead. To test timeouts, send the
+  timer message directly: `send(Process.whereis(Tyrmm.Lobbies), {:ready_check_timeout, id})`.
+- Always finish with `mix precommit` (compile --warnings-as-errors + format + test).
+- Live verification: drive the user's browser with `browser_eval` (page text
+  renders UPPERCASE via CSS — compare case-insensitively) and simulate other
+  players from `project_eval` with spawned sleeping pids, e.g.
+  `Lobbies.register("sim", pid); Lobbies.join_lobby("sim", "CODE")`. Clean up sims
+  (leave/close) when done. Don't close/modify a lobby the user opened themselves.
