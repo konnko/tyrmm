@@ -63,25 +63,36 @@ defmodule TyrmmWeb.CoreComponents do
       id={@id}
       phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
       role="alert"
-      class="toast toast-top toast-end z-50"
+      class={[
+        "pointer-events-auto w-80 cursor-pointer border bg-[#10141b] sm:w-96",
+        @kind == :info && "border-[#99f7ff]/60",
+        @kind == :error && "border-[#f0554d]/60"
+      ]}
       {@rest}
     >
+      <%!-- kind strip: the whole notice reads as one of the lobby panels --%>
       <div class={[
-        "alert w-80 sm:w-96 max-w-80 sm:max-w-96 text-wrap",
-        @kind == :info && "alert-info",
-        @kind == :error && "alert-error"
+        "flex items-center gap-2 border-b px-3 py-1.5 font-code text-[12px] font-semibold uppercase tracking-[0.25em]",
+        @kind == :info && "border-[#99f7ff]/30 bg-[#99f7ff]/10 text-[#99f7ff]",
+        @kind == :error && "border-[#f0554d]/30 bg-[#f0554d]/10 text-[#f0554d]"
       ]}>
-        <.icon :if={@kind == :info} name="hero-information-circle" class="size-5 shrink-0" />
-        <.icon :if={@kind == :error} name="hero-exclamation-circle" class="size-5 shrink-0" />
-        <div>
-          <p :if={@title} class="font-semibold">{@title}</p>
-          <p>{msg}</p>
-        </div>
-        <div class="flex-1" />
-        <button type="button" class="group self-start cursor-pointer" aria-label={gettext("close")}>
-          <.icon name="hero-x-mark" class="size-5 opacity-40 group-hover:opacity-70" />
+        <.icon :if={@kind == :info} name="hero-information-circle-micro" class="size-3.5 shrink-0" />
+        <.icon
+          :if={@kind == :error}
+          name="hero-exclamation-triangle-micro"
+          class="size-3.5 shrink-0"
+        />
+        {@title || ((@kind == :info && gettext("Notice")) || gettext("Error"))}
+        <span class="animate-blink">_</span>
+        <button
+          type="button"
+          class="ml-auto cursor-pointer opacity-50 transition-opacity hover:opacity-100"
+          aria-label={gettext("close")}
+        >
+          <.icon name="hero-x-mark-micro" class="size-3.5" />
         </button>
       </div>
+      <p class="text-wrap px-3 py-2 font-code text-[14px] leading-snug text-[#d7dde6]">{msg}</p>
     </div>
     """
   end

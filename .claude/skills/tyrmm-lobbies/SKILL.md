@@ -58,7 +58,7 @@ State:
 
 ```elixir
 %{
-  players: %{player_id => %{name, pid, ref}},   # ref = monitor; pid/ref nil while disconnected
+  players: %{player_id => %{name, pids: %{pid => monitor_ref}}},  # one pid per open tab!
   disconnected: %{player_id => grace_timer},     # 30s grace; refresh survives, then cleanup
   lobbies: %{lobby_id => lobby}
 }
@@ -90,9 +90,12 @@ Patterns the module relies on:
   none), lobbies (all, each with mine/member flags), counts}`. Per-viewer secrets
   (code, messages) are stripped in `lobby_view/3` — add new secret fields there.
 - Liveness: LiveViews call `register(player_id)` on connected mount; the server
-  monitors the pid. DOWN → 30s grace timer → `drop_player`: member loses seat
-  (votes + ready responses go too, via `remove_seat`), host's lobby closes.
-  DOWN and register both `broadcast` (seat chips show dropped players red live).
+  monitors EVERY tab's pid (a player can have several tabs — replacing instead of
+  accumulating pids once closed a host's lobby while their other tab watched).
+  Grace starts only when the LAST pid dies: DOWN → 30s grace timer →
+  `drop_player`: member loses seat (votes + ready responses go too, via
+  `remove_seat`), host's lobby closes. DOWN-to-empty and register both
+  `broadcast` (seat chips show dropped players red live).
 - When a lobby closes (host closed it or dropped), `notify_lobby_closed/3` sends
   `{:lobby_closed, reason}` directly to each connected member's LiveView pid →
   they render it as an error flash. Use this direct-send pattern for any future
@@ -152,7 +155,8 @@ Dark "operations deck": bg `#0a0c10`, panel `#10141b`, border `#1c212b`, muted
 text `#aab4c4`/`#7f8a9c`/`#566175` (brightened 2026-08-17 — user found the old
 greys too faint; don't dim them back), accent ice-cyan `#99f7ff` (user swapped it
 in for the original lime `#c8f542` on 2026-08-17; lime survives ONLY on the header
-"live" pulse dot and the Start game button — the user chose those exceptions),
+"live" pulse dot and the "readied" seat-chip state — the Start game button that
+was the other lime exception was later replaced by the status radio toggle),
 warning amber `#f0a63a`
 (also the NA region color), danger red `#f0554d`, EU cyan `#4ac6f5`. Fonts:
 `font-display` (Chakra Petch, uppercase + wide tracking for headings/numbers) and

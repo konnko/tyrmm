@@ -142,6 +142,60 @@ defmodule TyrmmWeb.LobbyLiveTest do
     refute html =~ "you have a seat"
   end
 
+  test "a host with two tabs open survives closing one of them", %{conn: _conn} do
+    cleanup(["tabby"])
+    {_id, tab1} = sim_player("tabby", "Tabby")
+    tab2 = spawn(fn -> Process.sleep(:infinity) end)
+    :ok = Lobbies.register("tabby", tab2)
+
+    {:ok, _} = Lobbies.create_lobby("tabby", "TABS01", :na)
+
+    # closing one tab must not start the disconnect countdown
+    Process.exit(tab2, :kill)
+    :sys.get_state(Lobbies)
+    assert %{lobby: %{players: [%{connected: true}]}} = Lobbies.snapshot("tabby")
+
+    # losing the last tab does
+    Process.exit(tab1, :kill)
+    :sys.get_state(Lobbies)
+    assert %{lobby: %{players: [%{connected: false}]}} = Lobbies.snapshot("tabby")
+
+    send(Process.whereis(Lobbies), {:drop_player, "tabby"})
+    :sys.get_state(Lobbies)
+    assert Lobbies.snapshot("tabby").lobby == nil
+  end
+
+  test "the host can kick a member, who is told about it", %{conn: conn} do
+    cleanup(["k_host", "k_other"])
+    sim_player("k_host", "KickHost")
+    sim_player("k_other", "KOther")
+    {:ok, _} = Lobbies.create_lobby("k_host", "KICK01", :na)
+    :ok = Lobbies.join_lobby("k_other", "KICK01")
+
+    # the LiveView under test takes the third seat
+    {:ok, view, _html} = live(conn, "/join/kick01")
+    assert render(view) =~ "you have a seat"
+
+    victim_id =
+      Lobbies.snapshot("k_host").lobby.players
+      |> Enum.find(&(&1.name not in ["KickHost", "KOther"]))
+      |> Map.fetch!(:id)
+
+    # only the host can kick, and only actual members
+    assert {:error, "you don't host a lobby"} = Lobbies.kick_player("k_other", victim_id)
+
+    assert {:error, "that player isn't seated in your lobby"} =
+             Lobbies.kick_player("k_host", "nobody")
+
+    :ok = Lobbies.kick_player("k_host", victim_id)
+    :sys.get_state(Lobbies)
+
+    html = render(view)
+    assert html =~ "the host removed you from the lobby"
+    refute html =~ "you have a seat"
+    assert Lobbies.snapshot("k_host").lobby.seats == 2
+  end
+
   test "a lobby caps at 16 seats", %{conn: _conn} do
     ids = for i <- 1..17, do: "cap_#{i}"
     cleanup(ids)
@@ -258,6 +312,8 @@ defmodule TyrmmWeb.LobbyLiveTest do
 
     :ok = Lobbies.ready_up("r_host")
     assert Lobbies.snapshot("r_host").lobby.ready_check.status == :passed
+    # a passed check starts the game automatically
+    assert Lobbies.snapshot("r_host").lobby.status == :in_game
 
     # a fresh check that times out fails
     :ok = Lobbies.start_ready_check("r_host")
@@ -279,6 +335,7 @@ defmodule TyrmmWeb.LobbyLiveTest do
 
     :ok = Lobbies.leave_lobby("rl_b")
     assert Lobbies.snapshot("rl_host").lobby.ready_check.status == :passed
+    assert Lobbies.snapshot("rl_host").lobby.status == :in_game
   end
 
   test "auto ready check starts when the lobby fills", %{conn: _conn} do

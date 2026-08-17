@@ -117,6 +117,11 @@ defmodule Tyrmm.Lobbies do
     GenServer.call(__MODULE__, {:leave_lobby, player_id})
   end
 
+  @doc "Remove a member from the lobby you host. They can rejoin (no ban)."
+  def kick_player(player_id, member_id) do
+    GenServer.call(__MODULE__, {:kick_player, player_id, member_id})
+  end
+
   def send_chat(player_id, lobby_id, body) do
     GenServer.call(__MODULE__, {:send_chat, player_id, lobby_id, body})
   end
@@ -136,7 +141,7 @@ defmodule Tyrmm.Lobbies do
   @impl true
   def init(_opts) do
     state = %{
-      # player_id => %{name, pid, ref}
+      # player_id => %{name, pids: %{pid => monitor_ref}} — one entry per open tab
       players: %{},
       # player_id => grace timer ref, set when their process goes down
       disconnected: %{},
@@ -159,14 +164,19 @@ defmodule Tyrmm.Lobbies do
           %{state | disconnected: disconnected}
       end
 
-    player = Map.get(state.players, player_id, %{name: nil})
+    player = Map.get(state.players, player_id, %{name: nil, pids: %{}})
 
-    if player[:ref], do: Process.demonitor(player.ref, [:flush])
-    ref = Process.monitor(pid)
+    # a player may have several tabs open — track and monitor every one
+    pids =
+      if Map.has_key?(player.pids, pid) do
+        player.pids
+      else
+        Map.put(player.pids, pid, Process.monitor(pid))
+      end
 
     # first visit gets a random callsign; returning cookies keep theirs
     name = player.name || random_name(state)
-    players = Map.put(state.players, player_id, %{name: name, pid: pid, ref: ref})
+    players = Map.put(state.players, player_id, %{name: name, pids: pids})
     # broadcast so a reconnecting player's seat chip stops showing as dropped
     {:reply, :ok, broadcast(%{state | players: players})}
   end
@@ -366,6 +376,22 @@ defmodule Tyrmm.Lobbies do
     {:reply, :ok, state |> remove_seat(player_id) |> broadcast()}
   end
 
+  def handle_call({:kick_player, player_id, member_id}, _from, state) do
+    lobby = hosted_lobby(state, player_id)
+
+    cond do
+      lobby == nil ->
+        {:reply, {:error, "you don't host a lobby"}, state}
+
+      member_id not in lobby.members ->
+        {:reply, {:error, "that player isn't seated in your lobby"}, state}
+
+      true ->
+        notify_player(state, member_id, "the host removed you from the lobby")
+        {:reply, :ok, state |> remove_seat(member_id) |> broadcast()}
+    end
+  end
+
   def handle_call({:send_chat, player_id, lobby_id, body}, _from, state) do
     body = body |> to_string() |> String.trim()
     lobby = state.lobbies[lobby_id]
@@ -429,23 +455,26 @@ defmodule Tyrmm.Lobbies do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
-    case Enum.find(state.players, fn {_id, p} -> p.ref == ref end) do
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    case Enum.find(state.players, fn {_id, p} -> Map.has_key?(p.pids, pid) end) do
       nil ->
         {:noreply, state}
 
       {player_id, player} ->
-        timer = Process.send_after(self(), {:drop_player, player_id}, @disconnect_grace_ms)
-        players = Map.put(state.players, player_id, %{player | pid: nil, ref: nil})
+        pids = Map.delete(player.pids, pid)
+        players = Map.put(state.players, player_id, %{player | pids: pids})
+        state = %{state | players: players}
 
-        state = %{
-          state
-          | players: players,
-            disconnected: Map.put(state.disconnected, player_id, timer)
-        }
+        if map_size(pids) == 0 do
+          # last tab gone — start the grace countdown; seat chips show them red
+          timer = Process.send_after(self(), {:drop_player, player_id}, @disconnect_grace_ms)
 
-        # seat chips show dropped players in red while the grace timer runs
-        {:noreply, broadcast(state)}
+          {:noreply,
+           broadcast(%{state | disconnected: Map.put(state.disconnected, player_id, timer)})}
+        else
+          # another tab is still connected; nothing changes for anyone
+          {:noreply, state}
+        end
     end
   end
 
@@ -593,7 +622,8 @@ defmodule Tyrmm.Lobbies do
           if check.timer_ref, do: Process.cancel_timer(check.timer_ref)
           Process.send_after(self(), {:clear_ready_check, lobby_id}, @ready_result_ttl_ms)
           check = %{check | status: :passed, timer_ref: nil}
-          put_in(state.lobbies[lobby_id], %{lobby | ready_check: check})
+          # everyone confirmed — the game is on
+          put_in(state.lobbies[lobby_id], %{lobby | ready_check: check, status: :in_game})
         else
           state
         end
@@ -609,10 +639,12 @@ defmodule Tyrmm.Lobbies do
 
   # tell every connected member why their lobby just vanished
   defp notify_lobby_closed(state, lobby, reason) do
-    for id <- lobby.members,
-        pid = get_in(state.players, [id, :pid]),
-        is_pid(pid) do
-      send(pid, {:lobby_closed, reason})
+    Enum.each(lobby.members, &notify_player(state, &1, reason))
+  end
+
+  defp notify_player(state, player_id, message) do
+    for pid <- Map.keys(get_in(state.players, [player_id, :pids]) || %{}) do
+      send(pid, {:lobby_notice, message})
     end
 
     :ok
@@ -700,6 +732,10 @@ defmodule Tyrmm.Lobbies do
       players:
         Enum.map([lobby.creator_id | lobby.members], fn id ->
           %{
+            # ids are safe to show seated players: server events only ever act
+            # on the session's own player_id, never a client-supplied identity
+            id: id,
+            host: id == lobby.creator_id,
             name: player_name(state, id) || "player",
             you: id == player_id,
             # seated players are either live or inside the disconnect grace window

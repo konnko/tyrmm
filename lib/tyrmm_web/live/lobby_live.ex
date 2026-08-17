@@ -142,6 +142,13 @@ defmodule TyrmmWeb.LobbyLive do
     {:noreply, refresh(socket)}
   end
 
+  def handle_event("kick_player", %{"id" => member_id}, socket) do
+    case Lobbies.kick_player(socket.assigns.player_id, member_id) do
+      :ok -> {:noreply, refresh(socket)}
+      {:error, msg} -> {:noreply, put_flash(socket, :error, msg)}
+    end
+  end
+
   def handle_event("send_chat", %{"lobby_id" => lobby_id, "body" => body}, socket) do
     case Lobbies.send_chat(socket.assigns.player_id, lobby_id, body) do
       :ok -> {:noreply, socket |> push_event("chat_sent", %{}) |> refresh()}
@@ -167,8 +174,8 @@ defmodule TyrmmWeb.LobbyLive do
     {:noreply, assign(socket, :online, Presence.online_count())}
   end
 
-  def handle_info({:lobby_closed, reason}, socket) do
-    {:noreply, socket |> put_flash(:error, reason) |> refresh()}
+  def handle_info({:lobby_notice, message}, socket) do
+    {:noreply, socket |> put_flash(:error, message) |> refresh()}
   end
 
   def handle_info(:tick, socket) do
@@ -249,8 +256,8 @@ defmodule TyrmmWeb.LobbyLive do
   defp panel(assigns) do
     ~H"""
     <section class={["relative border border-[#1c212b] bg-[#10141b]", @class]}>
-      <div class="flex items-center justify-between border-b border-[#1c212b] px-4 py-2">
-        <h2 class="font-display text-[13px] font-semibold uppercase tracking-[0.3em] text-[#aab4c4]">
+      <div class="flex justify-between items-center py-2 px-4 border-b border-[#1c212b]">
+        <h2 class="font-semibold uppercase font-display text-[13px] tracking-[0.3em] text-[#aab4c4]">
           {@label}
         </h2>
         {render_slot(@corner)}
@@ -268,7 +275,7 @@ defmodule TyrmmWeb.LobbyLive do
 
   defp stat(assigns) do
     ~H"""
-    <span class="flex items-baseline gap-1.5 font-code text-[13px] uppercase tracking-[0.2em] text-[#7f8a9c]">
+    <span class="flex gap-1.5 items-baseline uppercase font-code text-[13px] tracking-[0.2em] text-[#7f8a9c]">
       {@label}
       <span class={[
         "font-display text-base font-bold tabular-nums",
@@ -321,11 +328,11 @@ defmodule TyrmmWeb.LobbyLive do
     ~H"""
     <div class="border border-[#1c212b] bg-[#0a0c10]">
       <%!-- newest-first + col-reverse keeps the view pinned to the latest message --%>
-      <div class="flex h-40 flex-col-reverse gap-1.5 overflow-y-auto px-3 py-2">
+      <div class="flex overflow-y-auto flex-col-reverse gap-1.5 py-2 px-3 h-40">
         <div :if={@messages == []} class="font-code text-[13px] text-[#566175]">
           No messages yet. Say hi.
         </div>
-        <div :for={message <- @messages} class="font-code text-[14px] leading-snug">
+        <div :for={message <- @messages} class="leading-snug font-code text-[14px]">
           <span class={[
             "font-semibold",
             (message.player_id == @me && "text-[#99f7ff]") || "text-[#aab4c4]"
@@ -351,11 +358,11 @@ defmodule TyrmmWeb.LobbyLive do
           required
           autocomplete="off"
           placeholder="say something…"
-          class="flex-1 bg-transparent px-3 py-2 font-code text-[14px] text-[#d7dde6] placeholder-[#566175] outline-none"
+          class="flex-1 py-2 px-3 bg-transparent outline-none font-code text-[14px] text-[#d7dde6] placeholder-[#566175]"
         />
         <button
           type="submit"
-          class="px-4 font-code text-[13px] uppercase tracking-[0.2em] text-[#99f7ff] transition hover:bg-[#99f7ff]/10"
+          class="px-4 uppercase transition font-code text-[13px] tracking-[0.2em] text-[#99f7ff] hover:bg-[#99f7ff]/10"
         >
           Send
         </button>
@@ -375,14 +382,14 @@ defmodule TyrmmWeb.LobbyLive do
       </:header>
       <div class="space-y-4">
         <%!-- callsign + alarm sound, one always-on strip --%>
-        <div class="flex flex-wrap items-center gap-x-6 gap-y-2 border border-[#1c212b] bg-[#10141b] px-4 py-2">
+        <div class="flex flex-wrap gap-y-2 gap-x-6 items-center py-2 px-4 border border-[#1c212b] bg-[#10141b]">
           <form
             :if={@snap.name}
             phx-submit="set_name"
-            class="flex items-center gap-2"
+            class="flex gap-2 items-center"
             title="callsign assigned at random — change it if you like"
           >
-            <span class="font-code text-[13px] uppercase tracking-[0.2em] text-[#7f8a9c]">
+            <span class="uppercase font-code text-[13px] tracking-[0.2em] text-[#7f8a9c]">
               Callsign
             </span>
             <input
@@ -393,20 +400,20 @@ defmodule TyrmmWeb.LobbyLive do
               maxlength="24"
               required
               autocomplete="off"
-              class="w-36 border border-[#2a3140] bg-[#0a0c10] px-2 py-0.5 font-display text-sm font-bold text-[#99f7ff] outline-none transition-colors focus:border-[#99f7ff]"
+              class="py-0.5 px-2 w-36 text-sm font-bold border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-display text-[#99f7ff] focus:border-[#99f7ff]"
             />
             <button
               type="submit"
-              class="border border-[#2a3140] px-2.5 py-0.5 font-code text-[12px] uppercase tracking-[0.2em] text-[#aab4c4] transition hover:border-[#99f7ff] hover:text-[#99f7ff]"
+              class="py-0.5 px-2.5 uppercase border transition border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
             >
               Rename
             </button>
           </form>
-          <div class="ml-auto flex items-center gap-3">
+          <div class="flex gap-3 items-center ml-auto">
             <button
               phx-click={JS.dispatch("tyrmm:sound-check")}
               title="play the ready check alarm — also unlocks audio for this tab"
-              class="flex cursor-pointer items-center gap-1.5 border border-[#2a3140] px-3 py-1 font-code text-[12px] uppercase tracking-[0.2em] text-[#aab4c4] transition hover:border-[#99f7ff] hover:text-[#99f7ff]"
+              class="flex gap-1.5 items-center py-1 px-3 uppercase border transition cursor-pointer border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
             >
               <.icon name="hero-speaker-wave-micro" class="size-3.5" /> Try ready check sound
             </button>
@@ -422,13 +429,13 @@ defmodule TyrmmWeb.LobbyLive do
               class="w-24 cursor-pointer accent-[#99f7ff]"
             />
           </div>
-          <div class="flex basis-full flex-wrap items-center gap-x-3 gap-y-1">
+          <div class="flex flex-wrap gap-y-1 gap-x-3 items-center basis-full">
             <button
               id="keep-awake-toggle"
               phx-hook="KeepAwakeToggle"
               phx-update="ignore"
               type="button"
-              class="flex cursor-pointer items-center gap-1.5 border border-[#2a3140] px-3 py-1 font-code text-[12px] uppercase tracking-[0.2em] text-[#aab4c4] transition hover:border-[#99f7ff] hover:text-[#99f7ff]"
+              class="flex gap-1.5 items-center py-1 px-3 uppercase border transition cursor-pointer border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
             >
               <.icon name="hero-bolt-micro" class="size-3.5" /> Keep tab awake:
               <span data-state>off</span>
@@ -450,7 +457,19 @@ defmodule TyrmmWeb.LobbyLive do
             (@snap.lobby.mine && "Your lobby") || "#{@snap.lobby.host}'s lobby — you have a seat"
           }
         >
-          <:corner><.region_badge region={@snap.lobby.region} /></:corner>
+          <:corner>
+            <div class="flex gap-3 items-center">
+              <button
+                :if={@snap.lobby.mine}
+                phx-click="close_lobby"
+                data-confirm="Close the lobby? Everyone loses their seat."
+                class="py-0.5 px-3 uppercase border transition cursor-pointer border-[#f0554d]/50 font-code text-[12px] tracking-[0.2em] text-[#f0554d] hover:bg-[#f0554d] hover:text-[#0a0c10]"
+              >
+                Close lobby
+              </button>
+              <.region_badge region={@snap.lobby.region} />
+            </div>
+          </:corner>
 
           <%!-- keeps the screen awake while you hold a seat --%>
           <div id="lobby-wake-lock" phx-hook="KeepAwake" class="hidden"></div>
@@ -473,10 +492,10 @@ defmodule TyrmmWeb.LobbyLive do
               phx-hook="ReadyAlarm"
               class="hidden"
             ></span>
-            <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <div class="flex flex-wrap gap-y-2 gap-x-4 items-center">
               <span
                 :if={@snap.lobby.ready_check.status == :running}
-                class="font-display text-sm font-bold uppercase tracking-[0.25em] text-[#f0a63a]"
+                class="text-sm font-bold uppercase font-display tracking-[0.25em] text-[#f0a63a]"
               >
                 Ready check
                 <span class={[
@@ -488,34 +507,34 @@ defmodule TyrmmWeb.LobbyLive do
               </span>
               <span
                 :if={@snap.lobby.ready_check.status == :passed}
-                class="font-display text-sm font-bold uppercase tracking-[0.25em] text-[#99f7ff]"
+                class="text-sm font-bold uppercase font-display tracking-[0.25em] text-[#99f7ff]"
               >
                 All ready — see you in game
               </span>
               <span
                 :if={@snap.lobby.ready_check.status == :failed}
-                class="font-display text-sm font-bold uppercase tracking-[0.25em] text-[#f0554d]"
+                class="text-sm font-bold uppercase font-display tracking-[0.25em] text-[#f0554d]"
               >
                 Ready check failed
               </span>
-              <span class="font-code text-[14px] tabular-nums text-[#aab4c4]">
+              <span class="tabular-nums font-code text-[14px] text-[#aab4c4]">
                 {@snap.lobby.ready_check.ready_count}/{@snap.lobby.ready_check.total} ready
               </span>
               <button
                 :if={@snap.lobby.ready_check.status == :running && !@snap.lobby.ready_check.me_ready}
                 phx-click="ready_up"
-                class="ml-auto border border-[#99f7ff] bg-[#99f7ff] px-5 py-1.5 font-display text-sm font-bold uppercase tracking-[0.25em] text-[#0a0c10] transition hover:bg-transparent hover:text-[#99f7ff]"
+                class="py-1.5 px-5 ml-auto text-sm font-bold uppercase border transition hover:bg-transparent border-[#99f7ff] bg-[#99f7ff] font-display tracking-[0.25em] text-[#0a0c10] hover:text-[#99f7ff]"
               >
                 I'm ready
               </button>
               <span
                 :if={@snap.lobby.ready_check.status == :running && @snap.lobby.ready_check.me_ready}
-                class="ml-auto font-code text-[13px] uppercase tracking-[0.2em] text-[#99f7ff]"
+                class="ml-auto uppercase font-code text-[13px] tracking-[0.2em] text-[#99f7ff]"
               >
                 ready<span class="animate-blink">_</span>
               </span>
             </div>
-            <div class="mt-2 flex flex-wrap gap-1.5">
+            <div class="flex flex-wrap gap-1.5 mt-2">
               <span
                 :for={player <- @snap.lobby.ready_check.players}
                 class={[
@@ -529,37 +548,84 @@ defmodule TyrmmWeb.LobbyLive do
             </div>
           </div>
 
+          <%!-- lobby status, impossible to miss; the host's version is a radio toggle --%>
+          <div
+            :if={@snap.lobby.mine}
+            class="grid grid-cols-2 gap-2 mb-4"
+            title="lobby status — shown to everyone in the lobby list"
+          >
+            <button
+              phx-click="set_status"
+              phx-value-status="gathering"
+              class={[
+                "cursor-pointer border px-4 py-2.5 text-center font-display text-sm font-bold uppercase tracking-[0.3em] transition",
+                (@snap.lobby.status == :gathering &&
+                   "border-[#99f7ff] bg-[#99f7ff]/10 text-[#99f7ff]") ||
+                  "border-[#2a3140] text-[#566175] hover:border-[#99f7ff]/60 hover:text-[#aab4c4]"
+              ]}
+            >
+              Gathering<span :if={@snap.lobby.status == :gathering} class="animate-blink">_</span>
+            </button>
+            <button
+              phx-click="set_status"
+              phx-value-status="in_game"
+              class={[
+                "cursor-pointer border px-4 py-2.5 text-center font-display text-sm font-bold uppercase tracking-[0.3em] transition",
+                (@snap.lobby.status == :in_game &&
+                   "border-[#f0a63a] bg-[#f0a63a]/10 text-[#f0a63a]") ||
+                  "border-[#2a3140] text-[#566175] hover:border-[#f0a63a]/60 hover:text-[#aab4c4]"
+              ]}
+            >
+              In game<span :if={@snap.lobby.status == :in_game} class="animate-blink">_</span>
+            </button>
+          </div>
+          <div
+            :if={!@snap.lobby.mine}
+            class={[
+              "mb-4 border px-4 py-2.5 text-center font-display text-sm font-bold uppercase tracking-[0.3em]",
+              @snap.lobby.status == :gathering && "border-[#99f7ff]/40 bg-[#99f7ff]/5 text-[#99f7ff]",
+              @snap.lobby.status == :in_game && "border-[#f0a63a]/40 bg-[#f0a63a]/5 text-[#f0a63a]"
+            ]}
+          >
+            <span :if={@snap.lobby.status == :gathering}>
+              Gathering<span class="animate-blink">_</span>
+            </span>
+            <span :if={@snap.lobby.status == :in_game}>
+              In game<span class="animate-blink">_</span>
+            </span>
+          </div>
+
           <div class="space-y-4">
             <div class="space-y-3">
-              <div class="flex items-baseline justify-between">
+              <div class="flex justify-between items-baseline">
                 <div>
-                  <div class="font-code text-[12px] uppercase tracking-[0.25em] text-[#7f8a9c]">
+                  <div class="uppercase font-code text-[12px] tracking-[0.25em] text-[#7f8a9c]">
                     In-game code
                   </div>
-                  <div class="select-all font-display text-xl font-bold tracking-[0.3em] text-[#99f7ff]">
+                  <div class="text-xl font-bold select-all font-display tracking-[0.3em] text-[#99f7ff]">
                     {@snap.lobby.code}
                   </div>
                   <button
                     phx-click={JS.dispatch("tyrmm:copy")}
                     data-copy={url(~p"/join/#{@snap.lobby.code}")}
                     title="opening this link takes a seat in your lobby"
-                    class="mt-1 flex cursor-pointer items-center gap-1.5 border border-[#2a3140] px-2 py-0.5 font-code text-[12px] uppercase tracking-[0.2em] text-[#aab4c4] transition hover:border-[#99f7ff] hover:text-[#99f7ff]"
+                    class="flex gap-1.5 items-center py-0.5 px-2 mt-1 uppercase border transition cursor-pointer border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
                   >
                     <.icon name="hero-link-micro" class="size-3.5" /> Copy join link
                   </button>
                 </div>
                 <div class="text-right">
-                  <div class="font-code text-[12px] uppercase tracking-[0.25em] text-[#7f8a9c]">
+                  <div class="uppercase font-code text-[12px] tracking-[0.25em] text-[#7f8a9c]">
                     Seats
                   </div>
-                  <div class="font-display text-xl font-bold tabular-nums">
+                  <div class="text-xl font-bold tabular-nums font-display">
                     {@snap.lobby.seats}<span class="text-[#7f8a9c]">/16</span>
                   </div>
                 </div>
               </div>
-              <div class="h-1.5 w-full bg-[#1c212b]">
+              <div class="w-full h-1.5 bg-[#1c212b]">
                 <div
-                  class="h-full bg-[#99f7ff] transition-all duration-500"
+                  class="h-full transition-all duration-500 bg-[#99f7ff]"
                   style={"width: #{round(@snap.lobby.seats / 16 * 100)}%"}
                 >
                 </div>
@@ -567,92 +633,69 @@ defmodule TyrmmWeb.LobbyLive do
               <div class="flex flex-wrap gap-1.5">
                 <span
                   :for={player <- @snap.lobby.players}
-                  class={["border px-2 py-0.5 font-code text-[13px]", seat_chip_class(player)]}
+                  class={[
+                    "flex items-center gap-1 border px-2 py-0.5 font-code text-[13px]",
+                    seat_chip_class(player)
+                  ]}
                 >
                   {player.name}
+                  <button
+                    :if={@snap.lobby.mine && !player.host}
+                    phx-click="kick_player"
+                    phx-value-id={player.id}
+                    data-confirm={"Kick #{player.name} from the lobby?"}
+                    title={"kick #{player.name}"}
+                    class="transition cursor-pointer text-[#566175] hover:text-[#f0554d]"
+                  >
+                    ✕
+                  </button>
                 </span>
               </div>
-              <div class="flex items-center justify-between">
-                <span class="font-code text-[13px] uppercase tracking-[0.2em] text-[#aab4c4]">
-                  <span :if={@snap.lobby.status == :in_game} class="text-[#f0a63a]">
-                    in game<span class="animate-blink">_</span>
-                  </span>
-                  <span :if={@snap.lobby.status == :gathering && !@snap.lobby.full}>
-                    gathering<span class="animate-blink">_</span>
-                  </span>
-                  <span
-                    :if={@snap.lobby.status == :gathering && @snap.lobby.full}
-                    class="text-[#99f7ff]"
-                  >
-                    full — see you in game
-                  </span>
-                </span>
-                <span :if={@snap.lobby.mine} class="flex items-center gap-2">
-                  <button
-                    :if={@snap.lobby.status == :gathering}
-                    phx-click="set_status"
-                    phx-value-status="in_game"
-                    class="border border-[#c8f542]/60 px-4 py-1.5 font-code text-[13px] uppercase tracking-[0.2em] text-[#c8f542] transition hover:bg-[#c8f542] hover:text-[#0a0c10]"
-                  >
-                    Start game
-                  </button>
-                  <button
-                    :if={@snap.lobby.status == :in_game}
-                    phx-click="set_status"
-                    phx-value-status="gathering"
-                    class="border border-[#2a3140] px-4 py-1.5 font-code text-[13px] uppercase tracking-[0.2em] text-[#aab4c4] transition hover:border-[#99f7ff] hover:text-[#99f7ff]"
-                  >
-                    Back to gathering
-                  </button>
+              <div class="flex justify-end items-center">
+                <span :if={@snap.lobby.mine} class="flex gap-2 items-center">
                   <button
                     :if={!match?(%{status: :running}, @snap.lobby.ready_check)}
                     phx-click="start_ready_check"
-                    class="border border-[#f0a63a]/60 px-4 py-1.5 font-code text-[13px] uppercase tracking-[0.2em] text-[#f0a63a] transition hover:bg-[#f0a63a] hover:text-[#0a0c10]"
+                    class="py-1.5 px-4 uppercase border transition border-[#f0a63a]/60 font-code text-[13px] tracking-[0.2em] text-[#f0a63a] hover:bg-[#f0a63a] hover:text-[#0a0c10]"
                   >
                     Ready check
-                  </button>
-                  <button
-                    phx-click="close_lobby"
-                    class="border border-[#f0554d]/50 px-4 py-1.5 font-code text-[13px] uppercase tracking-[0.2em] text-[#f0554d] transition hover:bg-[#f0554d] hover:text-[#0a0c10]"
-                  >
-                    Close lobby
                   </button>
                 </span>
                 <button
                   :if={!@snap.lobby.mine}
                   phx-click="leave_lobby"
-                  class="border border-[#f0554d]/50 px-4 py-1.5 font-code text-[13px] uppercase tracking-[0.2em] text-[#f0554d] transition hover:bg-[#f0554d] hover:text-[#0a0c10]"
+                  class="py-1.5 px-4 uppercase border transition border-[#f0554d]/50 font-code text-[13px] tracking-[0.2em] text-[#f0554d] hover:bg-[#f0554d] hover:text-[#0a0c10]"
                 >
                   Give up seat
                 </button>
               </div>
             </div>
             <div>
-              <div class="mb-2 font-code text-[12px] uppercase tracking-[0.25em] text-[#7f8a9c]">
-                Lobby chat — seated players only
+              <div class="mb-2 uppercase font-code text-[12px] tracking-[0.25em] text-[#7f8a9c]">
+                Chat
               </div>
               <.chat_box lobby_id={@snap.lobby.id} messages={@snap.lobby.messages} me={@player_id} />
             </div>
           </div>
-          <div :if={@snap.lobby.mine} class="mt-3 flex flex-wrap gap-x-6 gap-y-2">
-            <label class="flex cursor-pointer items-center gap-2.5">
+          <div :if={@snap.lobby.mine} class="flex flex-wrap gap-y-2 gap-x-6 mt-3">
+            <label class="flex gap-2.5 items-center cursor-pointer">
               <input
                 type="checkbox"
                 checked={@snap.lobby.open}
                 phx-click="toggle_open"
-                class="size-4 cursor-pointer accent-[#99f7ff]"
+                class="cursor-pointer size-4 accent-[#99f7ff]"
               />
               <span class="font-code text-[13px] text-[#aab4c4]">
                 <span class="font-semibold text-[#d7dde6]">Free to join</span>
                 — joinable from the list, no code needed
               </span>
             </label>
-            <label class="flex cursor-pointer items-center gap-2.5">
+            <label class="flex gap-2.5 items-center cursor-pointer">
               <input
                 type="checkbox"
                 checked={@snap.lobby.auto_ready}
                 phx-click="toggle_auto_ready"
-                class="size-4 cursor-pointer accent-[#99f7ff]"
+                class="cursor-pointer size-4 accent-[#99f7ff]"
               />
               <span class="font-code text-[13px] text-[#aab4c4]">
                 <span class="font-semibold text-[#d7dde6]">Auto ready check</span>
@@ -660,7 +703,7 @@ defmodule TyrmmWeb.LobbyLive do
               </span>
             </label>
           </div>
-          <form :if={@snap.lobby.mine} phx-submit="set_description" class="mt-3 flex gap-2">
+          <form :if={@snap.lobby.mine} phx-submit="set_description" class="flex gap-2 mt-3">
             <input
               id="lobby-description-input"
               type="text"
@@ -669,23 +712,23 @@ defmodule TyrmmWeb.LobbyLive do
               maxlength="120"
               autocomplete="off"
               placeholder="lobby description — shown in the lobby list (leave empty to clear)"
-              class="min-w-0 flex-1 border border-[#2a3140] bg-[#0a0c10] px-3 py-1.5 font-code text-[14px] text-[#d7dde6] placeholder-[#566175] outline-none transition-colors focus:border-[#99f7ff]"
+              class="flex-1 py-1.5 px-3 min-w-0 border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-code text-[14px] text-[#d7dde6] placeholder-[#566175] focus:border-[#99f7ff]"
             />
             <button
               type="submit"
-              class="border border-[#2a3140] px-4 py-1.5 font-code text-[12px] uppercase tracking-[0.2em] text-[#aab4c4] transition hover:border-[#99f7ff] hover:text-[#99f7ff]"
+              class="py-1.5 px-4 uppercase border transition border-[#2a3140] font-code text-[12px] tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
             >
               Update
             </button>
           </form>
           <p
             :if={!@snap.lobby.mine && @snap.lobby.description}
-            class="mt-4 font-code text-[14px] italic text-[#aab4c4]"
+            class="mt-4 italic font-code text-[14px] text-[#aab4c4]"
           >
             “{@snap.lobby.description}”
           </p>
-          <div class="mt-3 border-t border-[#1c212b] pt-3">
-            <div class="mb-2 flex items-baseline gap-10 font-code text-[12px] uppercase tracking-[0.25em] text-[#7f8a9c]">
+          <div class="pt-3 mt-3 border-t border-[#1c212b]">
+            <div class="flex gap-10 items-baseline mb-2 uppercase font-code text-[12px] tracking-[0.25em] text-[#7f8a9c]">
               Map vote
               <span :if={@snap.lobby.vote.top_map}>
                 leading: <span class="text-[#f0a63a]">{@snap.lobby.vote.top_map}</span>
@@ -705,28 +748,28 @@ defmodule TyrmmWeb.LobbyLive do
                 JS.toggle_class("grid-rows-[1fr] visible", to: "#host-lobby-body")
                 |> JS.toggle_class("rotate-90", to: "#host-lobby-chevron")
               }
-              class="group flex w-full cursor-pointer items-center justify-between px-4 py-2 transition hover:bg-[#99f7ff]/10"
+              class="flex justify-between items-center py-2 px-4 w-full transition cursor-pointer group hover:bg-[#99f7ff]/10"
             >
-              <h2 class="font-display text-[13px] font-semibold uppercase tracking-[0.3em] text-[#aab4c4] transition-colors group-hover:text-[#99f7ff]">
+              <h2 class="font-semibold uppercase transition-colors font-display text-[13px] tracking-[0.3em] text-[#aab4c4] group-hover:text-[#99f7ff]">
                 Host a lobby
               </h2>
               <span id="host-lobby-chevron" class="flex transition-transform">
                 <.icon
                   name="hero-chevron-right-micro"
-                  class="size-4 text-[#7f8a9c] transition-colors group-hover:text-[#99f7ff]"
+                  class="transition-colors size-4 text-[#7f8a9c] group-hover:text-[#99f7ff]"
                 />
               </span>
             </button>
             <%!-- rows 0fr↔1fr animates height; invisible keeps collapsed fields unfocusable --%>
             <div
               id="host-lobby-body"
-              class="invisible grid grid-rows-[0fr] transition-[grid-template-rows,visibility] duration-200 ease-out"
+              class="grid invisible duration-200 ease-out grid-rows-[0fr] transition-[grid-template-rows,visibility]"
             >
               <div class="overflow-hidden">
-                <div class="border-t border-[#1c212b] p-4">
+                <div class="p-4 border-t border-[#1c212b]">
                   <form phx-submit="create_lobby" class="space-y-3">
                     <label class="block">
-                      <span class="mb-1 block font-code text-[13px] uppercase tracking-[0.25em] text-[#7f8a9c]">
+                      <span class="block mb-1 uppercase font-code text-[13px] tracking-[0.25em] text-[#7f8a9c]">
                         In-game room code
                       </span>
                       <input
@@ -735,32 +778,31 @@ defmodule TyrmmWeb.LobbyLive do
                         required
                         autocomplete="off"
                         pattern="[a-zA-Z0-9]{4,12}"
-                        title="4–12 letters or digits"
                         placeholder="PASTE CODE"
-                        class="w-full border border-[#2a3140] bg-[#0a0c10] px-3 py-1.5 font-code text-sm uppercase tracking-[0.3em] text-[#99f7ff] placeholder-[#566175] outline-none transition-colors focus:border-[#99f7ff]"
+                        class="py-1.5 px-3 w-full text-sm uppercase border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-code tracking-[0.3em] text-[#99f7ff] placeholder-[#566175] focus:border-[#99f7ff]"
                       />
                     </label>
                     <div>
-                      <span class="mb-1 block font-code text-[13px] uppercase tracking-[0.25em] text-[#7f8a9c]">
+                      <span class="block mb-1 uppercase font-code text-[13px] tracking-[0.25em] text-[#7f8a9c]">
                         Region
                       </span>
                       <div class="flex gap-2">
                         <label class="flex-1 cursor-pointer">
-                          <input type="radio" name="region" value="na" required class="peer sr-only" />
-                          <span class="block border border-[#2a3140] px-3 py-1.5 text-center font-display text-sm font-semibold uppercase tracking-[0.2em] text-[#aab4c4] transition peer-checked:border-[#f0a63a] peer-checked:bg-[#f0a63a]/10 peer-checked:text-[#f0a63a]">
+                          <input type="radio" name="region" value="na" required class="sr-only peer" />
+                          <span class="block py-1.5 px-3 text-sm font-semibold text-center uppercase border transition border-[#2a3140] font-display tracking-[0.2em] text-[#aab4c4] peer-checked:border-[#f0a63a] peer-checked:bg-[#f0a63a]/10 peer-checked:text-[#f0a63a]">
                             NA
                           </span>
                         </label>
                         <label class="flex-1 cursor-pointer">
-                          <input type="radio" name="region" value="eu" class="peer sr-only" />
-                          <span class="block border border-[#2a3140] px-3 py-1.5 text-center font-display text-sm font-semibold uppercase tracking-[0.2em] text-[#aab4c4] transition peer-checked:border-[#4ac6f5] peer-checked:bg-[#4ac6f5]/10 peer-checked:text-[#4ac6f5]">
+                          <input type="radio" name="region" value="eu" class="sr-only peer" />
+                          <span class="block py-1.5 px-3 text-sm font-semibold text-center uppercase border transition border-[#2a3140] font-display tracking-[0.2em] text-[#aab4c4] peer-checked:border-[#4ac6f5] peer-checked:bg-[#4ac6f5]/10 peer-checked:text-[#4ac6f5]">
                             EU
                           </span>
                         </label>
                       </div>
                     </div>
                     <label class="block">
-                      <span class="mb-1 block font-code text-[13px] uppercase tracking-[0.25em] text-[#7f8a9c]">
+                      <span class="block mb-1 uppercase font-code text-[13px] tracking-[0.25em] text-[#7f8a9c]">
                         Description <span class="text-[#566175]">(optional)</span>
                       </span>
                       <input
@@ -769,38 +811,38 @@ defmodule TyrmmWeb.LobbyLive do
                         maxlength="120"
                         autocomplete="off"
                         placeholder="e.g. chill scrims, mics required"
-                        class="w-full border border-[#2a3140] bg-[#0a0c10] px-3 py-1.5 font-code text-[14px] text-[#d7dde6] placeholder-[#566175] outline-none transition-colors focus:border-[#99f7ff]"
+                        class="py-1.5 px-3 w-full border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-code text-[14px] text-[#d7dde6] placeholder-[#566175] focus:border-[#99f7ff]"
                       />
                     </label>
-                    <label class="flex cursor-pointer items-start gap-2.5">
+                    <label class="flex gap-2.5 items-start cursor-pointer">
                       <input
                         type="checkbox"
                         name="open"
                         value="true"
                         checked
-                        class="mt-0.5 size-4 cursor-pointer accent-[#99f7ff]"
+                        class="mt-0.5 cursor-pointer size-4 accent-[#99f7ff]"
                       />
-                      <span class="font-code text-[13px] leading-relaxed text-[#aab4c4]">
+                      <span class="leading-relaxed font-code text-[13px] text-[#aab4c4]">
                         <span class="font-semibold text-[#d7dde6]">Free to join</span>
                         — anyone can take a seat straight from the lobby list, no code needed
                       </span>
                     </label>
-                    <label class="flex cursor-pointer items-start gap-2.5">
+                    <label class="flex gap-2.5 items-start cursor-pointer">
                       <input
                         type="checkbox"
                         name="auto_ready"
                         value="true"
                         checked
-                        class="mt-0.5 size-4 cursor-pointer accent-[#99f7ff]"
+                        class="mt-0.5 cursor-pointer size-4 accent-[#99f7ff]"
                       />
-                      <span class="font-code text-[13px] leading-relaxed text-[#aab4c4]">
+                      <span class="leading-relaxed font-code text-[13px] text-[#aab4c4]">
                         <span class="font-semibold text-[#d7dde6]">Auto ready check</span>
                         — starts when the lobby fills to 16
                       </span>
                     </label>
                     <button
                       type="submit"
-                      class="w-full border border-[#99f7ff] px-6 py-2 font-display text-sm font-bold uppercase tracking-[0.2em] text-[#99f7ff] transition hover:bg-[#99f7ff] hover:text-[#0a0c10]"
+                      class="py-2 px-6 w-full text-sm font-bold uppercase border transition border-[#99f7ff] font-display tracking-[0.2em] text-[#99f7ff] hover:bg-[#99f7ff] hover:text-[#0a0c10]"
                     >
                       Open lobby
                     </button>
@@ -814,13 +856,13 @@ defmodule TyrmmWeb.LobbyLive do
         <%!-- lobby board --%>
         <.panel label="Lobbies">
           <:corner>
-            <div class="flex flex-wrap items-center gap-x-5 gap-y-1">
+            <div class="flex flex-wrap gap-y-1 gap-x-5 items-center">
               <.stat label="Lobbies" value={to_string(@snap.counts.lobbies)} />
               <.stat label="Seated" value={to_string(@snap.counts.seated)} />
               <form
                 :if={@snap.name && is_nil(@snap.lobby)}
                 phx-submit="join_lobby"
-                class="flex items-center gap-2"
+                class="flex gap-2 items-center"
                 title="take a seat with an in-game lobby code"
               >
                 <input
@@ -829,13 +871,12 @@ defmodule TyrmmWeb.LobbyLive do
                   required
                   autocomplete="off"
                   pattern="[a-zA-Z0-9]{4,12}"
-                  title="4–12 letters or digits"
                   placeholder="LOBBY CODE"
-                  class="w-40 border border-[#2a3140] bg-[#0a0c10] px-3 py-1 font-code text-sm uppercase tracking-[0.3em] text-[#99f7ff] placeholder-[#566175] outline-none transition-colors focus:border-[#99f7ff]"
+                  class="py-1 px-3 w-40 text-sm uppercase border transition-colors outline-none border-[#2a3140] bg-[#0a0c10] font-code tracking-[0.3em] text-[#99f7ff] placeholder-[#566175] focus:border-[#99f7ff]"
                 />
                 <button
                   type="submit"
-                  class="border border-[#2a3140] px-4 py-1 font-display text-sm font-bold uppercase tracking-[0.2em] text-[#aab4c4] transition hover:border-[#99f7ff] hover:text-[#99f7ff]"
+                  class="py-1 px-4 text-sm font-bold uppercase border transition border-[#2a3140] font-display tracking-[0.2em] text-[#aab4c4] hover:border-[#99f7ff] hover:text-[#99f7ff]"
                 >
                   Take a seat
                 </button>
@@ -847,46 +888,46 @@ defmodule TyrmmWeb.LobbyLive do
           </div>
           <table :if={@snap.lobbies != []} class="w-full text-left">
             <thead>
-              <tr class="border-b border-[#1c212b] font-code text-[12px] uppercase tracking-[0.25em] text-[#7f8a9c]">
-                <th class="pb-2 pr-4 font-normal">Host</th>
-                <th class="pb-2 pr-4 font-normal">Region</th>
-                <th class="pb-2 pr-4 text-right font-normal">Seats</th>
-                <th class="pb-2 text-right font-normal"></th>
+              <tr class="uppercase border-b border-[#1c212b] font-code text-[12px] tracking-[0.25em] text-[#7f8a9c]">
+                <th class="pr-4 pb-2 font-normal">Host</th>
+                <th class="pr-4 pb-2 font-normal">Region</th>
+                <th class="pr-4 pb-2 font-normal text-right">Seats</th>
+                <th class="pb-2 font-normal text-right"></th>
               </tr>
             </thead>
             <tbody>
               <tr
                 :for={lobby <- @snap.lobbies}
-                class="border-b border-[#1c212b]/60 font-code text-sm last:border-0"
+                class="text-sm border-b last:border-0 border-[#1c212b]/60 font-code"
               >
                 <td class="py-2 pr-4">
                   <div>
                     {lobby.host}
-                    <span :if={lobby.mine} class="ml-2 text-[12px] uppercase text-[#99f7ff]">
+                    <span :if={lobby.mine} class="ml-2 uppercase text-[12px] text-[#99f7ff]">
                       you
                     </span>
-                    <span :if={lobby.member} class="ml-2 text-[12px] uppercase text-[#99f7ff]">
+                    <span :if={lobby.member} class="ml-2 uppercase text-[12px] text-[#99f7ff]">
                       seated
                     </span>
                     <span
                       :if={lobby.status == :in_game}
-                      class="ml-2 border border-[#f0a63a]/40 px-1.5 text-[12px] uppercase tracking-[0.15em] text-[#f0a63a]"
+                      class="px-1.5 ml-2 uppercase border border-[#f0a63a]/40 text-[12px] tracking-[0.15em] text-[#f0a63a]"
                     >
                       in game
                     </span>
                     <span
                       :if={lobby.full}
-                      class="ml-2 border border-[#f0554d]/40 px-1.5 text-[12px] uppercase tracking-[0.15em] text-[#f0554d]"
+                      class="px-1.5 ml-2 uppercase border border-[#f0554d]/40 text-[12px] tracking-[0.15em] text-[#f0554d]"
                     >
                       full
                     </span>
                   </div>
-                  <div :if={lobby.description} class="mt-0.5 text-[13px] italic text-[#7f8a9c]">
+                  <div :if={lobby.description} class="mt-0.5 italic text-[13px] text-[#7f8a9c]">
                     {lobby.description}
                   </div>
                 </td>
                 <td class="py-2 pr-4"><.region_badge region={lobby.region} /></td>
-                <td class="py-3 pr-4 text-right tabular-nums">
+                <td class="py-3 pr-4 tabular-nums text-right">
                   {lobby.seats}<span class="text-[#7f8a9c]">/16</span>
                 </td>
                 <td class="py-2 text-right">
@@ -897,7 +938,7 @@ defmodule TyrmmWeb.LobbyLive do
                     }
                     phx-click="join_open"
                     phx-value-lobby-id={lobby.id}
-                    class="border border-[#99f7ff]/50 px-3 py-1 text-[13px] uppercase tracking-[0.15em] text-[#99f7ff] transition hover:bg-[#99f7ff] hover:text-[#0a0c10]"
+                    class="py-1 px-3 uppercase border transition border-[#99f7ff]/50 text-[13px] tracking-[0.15em] text-[#99f7ff] hover:bg-[#99f7ff] hover:text-[#0a0c10]"
                   >
                     Join
                   </button>
